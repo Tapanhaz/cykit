@@ -121,12 +121,12 @@ class BuildExt(build_ext):
 
         print(f"{cmake_source_dir.name} built successfully")
 
-        print(f"\n{'='*60}")
-        print(f"DEBUG: Contents of {cmake_build_dir}:")
-        for item in cmake_build_dir.rglob("*"):
-            if item.is_file():
-                print(f"  {item.relative_to(cmake_build_dir)}")
-        print(f"{'='*60}\n")
+        #print(f"\n{'='*60}")
+        #print(f"DEBUG: Contents of {cmake_build_dir}:")
+        #for item in cmake_build_dir.rglob("*"):
+        #    if item.is_file():
+        #        print(f"  {item.relative_to(cmake_build_dir)}")
+        #print(f"{'='*60}\n")
 
         if platform.system() == "Windows":
             search_paths = [cmake_build_dir / "Release", cmake_build_dir]
