@@ -19,7 +19,7 @@ APIs are unstable and may change without notice.
 `cylogger` is the initial component of the `cykit` collection.  
 It is a thin wrapper around [spdlog](https://github.com/gabime/spdlog).
 
-Detailed examples can be found here: [cykit/examples/cylogger](https://github.com/Tapanhaz/cykit/examples/cylogger)
+Detailed examples can be found here: [cykit/examples/cylogger](https://github.com/Tapanhaz/cykit/tree/main/examples/cylogger)
 
 ## Contribution
 
