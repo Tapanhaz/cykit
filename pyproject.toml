@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cykit"
-version = "0.0.4"
+version = "0.0.5"
 description = "Cython utilities collection"
 readme = "README.md"
 license = {text = "MIT OR Apache-2.0"}

@@ -24,24 +24,6 @@
     #include <frameobject.h>
 #endif
 
-namespace {
-    static inline PyFrameObject* get_back_frame(PyFrameObject* frame) {
-        #if PY_VERSION_HEX >= 0x030B0000
-            return frame ? PyFrame_GetBack(frame) : nullptr;
-        #else
-            return frame ? frame->f_back : nullptr;
-        #endif
-    }
-
-    static inline void decref_frame(PyFrameObject* frame) {
-        #if PY_VERSION_HEX >= 0x030B0000
-            Py_XDECREF(frame);
-        #else
-            (void)frame;
-        #endif
-    }
-}
-
 namespace spdlog_internal {
 
     class MaxSinkLevel : public spdlog::sinks::sink {
@@ -161,60 +143,66 @@ namespace spdlog_internal {
         return message;
     }
 
+
     inline spdlog::source_loc py_caller_loc() {
         PyGILState_STATE gil = PyGILState_Ensure();
-        
         PyFrameObject* frame = PyEval_GetFrame();
-        PyFrameObject* caller = get_back_frame(frame);
-        
-        while (caller) {
-            PyCodeObject* code = PyFrame_GetCode(caller);
-            if (!code) break;
+        PyFrameObject* caller = nullptr;
 
-            const char* name = PyUnicode_AsUTF8(code->co_name);
-            bool should_skip = (name && strcmp(name, "<module>") == 0);
-            Py_DECREF(code);
-
-            if (!should_skip) break;
-
-            PyFrameObject* next = get_back_frame(caller);
-            decref_frame(caller);
-            caller = next;
-        }
-
-        if (!caller) {
-            caller = get_back_frame(frame);  
-            if (!caller) {
-                caller = frame;  
-            }
-        }
-
-        const char* filename = "<unknown>";
-        const char* funcname = "<module>";
-        int lineno = 0;
-
-        if (caller) {
-            PyCodeObject* code = PyFrame_GetCode(caller);
-            if (code) {
-                PyObject* f_obj = code->co_filename;
-                if (f_obj && PyUnicode_Check(f_obj)) {
-                    const char* fullpath = PyUnicode_AsUTF8(f_obj);
-                    const char* slash = strrchr(fullpath, '/');
-                    filename = slash ? slash + 1 : fullpath;
+        if (frame) {
+        #if PY_VERSION_HEX >= 0x030B0000
+                caller = PyFrame_GetBack(frame);
+                while (caller) {
+                    PyCodeObject* code = PyFrame_GetCode(caller);
+                    if (!code) break;
+                    const char* name = PyUnicode_AsUTF8(code->co_name);
+                    Py_DECREF(code);  // Only decref code, not frame
+                    if (name && strcmp(name, "<module>") != 0) break;
+                    caller = PyFrame_GetBack(caller);
                 }
-
-                PyObject* fn_obj = code->co_name;
-                if (fn_obj && PyUnicode_Check(fn_obj))
-                    funcname = PyUnicode_AsUTF8(fn_obj);
-
-                lineno = PyFrame_GetLineNumber(caller);
-                Py_DECREF(code);
+        #else
+                caller = frame->f_back;
+                while (caller) {
+                    PyCodeObject* code = caller->f_code;
+                    if (!code) break;
+                    const char* name = PyUnicode_AsUTF8(code->co_name);
+                    if (name && strcmp(name, "<module>") != 0) break;
+                    caller = caller->f_back;
+                }
+        #endif
             }
 
-            if (caller != frame) {
-                decref_frame(caller); 
+            if (!caller) caller = frame;
+
+            const char* filename = "<unknown>";
+            const char* funcname = "<module>";
+            int lineno = 0;
+
+            if (caller) {
+        #if PY_VERSION_HEX >= 0x030B0000
+                PyCodeObject* code = PyFrame_GetCode(caller);
+        #else
+                PyCodeObject* code = caller->f_code;
+        #endif
+                if (code) {
+                    PyObject* f_obj = code->co_filename;
+                    if (f_obj && PyUnicode_Check(f_obj)) {
+                        const char* fullpath = PyUnicode_AsUTF8(f_obj);
+                        const char* slash = strrchr(fullpath, '/');
+                        filename = slash ? slash + 1 : fullpath;
+                    }
+
+                    PyObject* fn_obj = code->co_name;
+                    if (fn_obj && PyUnicode_Check(fn_obj))
+                        funcname = PyUnicode_AsUTF8(fn_obj);
+
+                    lineno = PyFrame_GetLineNumber(caller);
+
+        #if PY_VERSION_HEX >= 0x030B0000
+                    Py_DECREF(code); 
+        #endif
+                }
             }
-        }
 
         PyGILState_Release(gil);
 
