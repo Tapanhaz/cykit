@@ -1,0 +1,46 @@
+[build-system]
+requires = [
+  "setuptools>=64.0.3",
+  "wheel",
+  "Cython>=3.2",
+  "cmake>=3.28.3"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cykit"
+version = "0.0.4"
+description = "Cython utilities collection"
+readme = "README.md"
+license = {text = "MIT OR Apache-2.0"}
+authors = [
+  { name = "Tapan Hazarika", email = "tapanhaz@gmail.com" }
+]
+requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Cython",
+]
+
+[tool.cibuildwheel]
+manylinux-x86_64-image = "manylinux_2_28" 
+manylinux-aarch64-image = "manylinux_2_28"
+skip = ["pp*", "*-win32", "*-manylinux_i686", "*-musllinux*"]
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "13.0" }
+
+[tool.cibuildwheel.windows]
+environment = { CMAKE_GENERATOR = "Visual Studio 17 2022" }
+
+[project.urls]
+Homepage = "https://github.com/Tapanhaz/cykit"
+Source = "https://github.com/Tapanhaz/cykit"
+Issues = "https://github.com/Tapanhaz/cykit/issues"

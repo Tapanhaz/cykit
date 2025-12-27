@@ -1,0 +1,16 @@
+
+include README.md
+
+include LICENSE-APACHE
+include LICENSE-MIT
+
+include pyproject.toml
+
+recursive-include cykit *.pxd *.pyx *.py *.pyi *.cpp *.hpp *.h
+recursive-include cykit *.so *.so.* *.dylib
+
+include cykit/cylogger/CMakeLists.txt
+
+graft cykit/cylogger
+
+prune cykit/cylogger/build
