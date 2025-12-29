@@ -1,6 +1,3 @@
-# distutils: language = c++
-# cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-# cython: infer_types=True, nonecheck=False, initializedcheck=False
 
 from cpython.bytes cimport PyBytes_AsString 
 from cykit.common cimport PyErr_SetString, PyExc_TypeError
