@@ -100,7 +100,7 @@ jobs:
   upload_test_pypi:
     needs: [build_wheels, build_sdist]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false
     permissions:
       id-token: write
     steps:
