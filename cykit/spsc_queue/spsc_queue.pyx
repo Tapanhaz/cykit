@@ -127,5 +127,7 @@ cdef class PySPSCQueue:
         self._capacity = capacity
         self._block = block
 
+        
+
 
 

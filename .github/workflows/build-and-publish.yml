@@ -16,7 +16,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        include:
+          - os: ubuntu-latest
+            cibw_archs: "x86_64"
+          - os: ubuntu-24.04-arm
+            cibw_archs: "aarch64"
+          - os: windows-latest
+            cibw_archs: "AMD64"
+          - os: macos-15
+            cibw_archs: "arm64"
     steps:
       - uses: actions/checkout@v4
 
@@ -34,15 +42,14 @@ jobs:
           CIBW_BUILD_VERBOSITY: 3
           CIBW_BUILD: cp39-* cp310-* cp311-* cp312-* cp313-*
           CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_* pp* *-macosx_universal2*"
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_BEFORE_BUILD: pip install setuptools wheel Cython cmake
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: python -c "import cykit; from cykit.cylogger import Logger; print('Import successful')"
-          CIBW_ARCHS_MACOS: "native"
-          CIBW_ARCHS_WINDOWS: "AMD64"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          name: cibw-wheels-${{ matrix.os }}-${{ matrix.cibw_archs }}
           path: ./wheelhouse/*.whl
 
   build_sdist:

@@ -374,7 +374,7 @@ if "CYKIT_OPTIMIZE" in __import__("os").environ:
 
 setup(
     name="cykit",
-    version="0.0.5",
+    version="0.0.6",
     packages=find_packages(),
     ext_modules=cythonize(
         extensions,

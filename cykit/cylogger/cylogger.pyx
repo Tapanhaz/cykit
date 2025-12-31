@@ -1,6 +1,10 @@
 
 from cpython.bytes cimport PyBytes_AsString 
 from cykit.common cimport PyErr_SetString, PyExc_TypeError
+from cykit.common cimport PyObject
+import logging as py_logging
+import traceback
+
 
 cdef class LogHandler:
 
@@ -8,7 +12,7 @@ cdef class LogHandler:
         self,  
         bint color=True, 
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="trace"
+        Level level=Level.TRACE
             ):
         self.color = color
         self.pattern = pattern
@@ -21,8 +25,8 @@ cdef class StdoutHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="trace", 
-        str max_level="info"
+        Level level=Level.TRACE, 
+        Level max_level=Level.INFO
             ):
         super().__init__(color, pattern, level)
         self.max_level = max_level
@@ -32,7 +36,7 @@ cdef class StderrHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="warn"
+        Level level=Level.WARN
             ):
         super().__init__(color, pattern, level)
 
@@ -41,7 +45,7 @@ cdef class BasicConsoleHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="trace"
+        Level level=Level.TRACE
             ):
         super().__init__(color, pattern, level)
 
@@ -52,10 +56,10 @@ cdef class ConsoleHandler(LogHandler):
         self,  
         bint color=True,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str max_stdout_level="info", 
-        str min_level="trace"
+        Level max_stdout_level=Level.INFO, 
+        Level min_level=Level.TRACE
             ):
-        super().__init__(color, pattern, "trace")
+        super().__init__(color, pattern, Level.TRACE)
         self.max_stdout_level = max_stdout_level
         self.min_level = min_level
 
@@ -67,7 +71,7 @@ cdef class FileHandler(LogHandler):
         str filename, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="trace", 
+        Level level=Level.TRACE, 
         bint overwrite=False
             ):
         super().__init__(color, pattern, level)
@@ -81,7 +85,7 @@ cdef class RotatingFileHandler(FileHandler):
         self, 
         str filename, 
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        str level="trace", 
+        Level level=Level.TRACE, 
         size_t max_size=1048576, 
         size_t max_files=3
             ):
@@ -109,19 +113,68 @@ cdef class ColorScheme:
         self.critical_color = critical_color
 
 
+
+class PyLogHandler(py_logging.Handler):    
+
+    def __init__(self, int level) -> None:
+        super().__init__(level)
+
+        self._debug = py_logging.DEBUG
+        self._info = py_logging.INFO
+        self._warn = py_logging.WARN
+        self._error = py_logging.ERROR
+        self._critical = py_logging.CRITICAL
+
+    
+    def emit(self, object record):
+        cdef:
+            bytes msg = record.getMessage().encode()
+            int lvl = record.levelno
+            object exc_info = record.exc_info
+            object stack_info = record.stack_info
+        
+        if exc_info is not None:
+            msg += b"\n"
+            msg += "".join(traceback.format_exception(*exc_info)).encode()
+        
+        if stack_info is not None:
+            msg += b"\n"
+            msg += str(stack_info).encode()
+        
+        if lvl >= self._critical:
+            CRITICAL_PY_LOG(msg=msg)
+        elif lvl >= self._error:
+            ERROR_PY_LOG(msg=msg)
+        elif lvl >= self._warn:
+            WARN_PY_LOG(msg=msg)
+        elif lvl >= self._info:
+            INFO_PY_LOG(msg=msg)
+        elif lvl >= self._debug:
+            DEBUG_PY_LOG(msg=msg)
+        else:
+            TRACE_PY_LOG(msg=msg)
+
+cdef void redirect_pylog():
+    cdef object root = py_logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(py_logging.DEBUG)
+    root.addHandler(PyLogHandler(py_logging.DEBUG))
+
+
 cdef class Logger:
     
     def __cinit__(
             self, 
             str name, 
-            str level=  "trace",
+            Level level=  Level.TRACE,
             str pattern= "[%d-%m-%Y %H:%M:%S.%f] [%n] [%^%l%$] %v",
             list handlers = [],
             ColorScheme color_scheme= None,
-            bint set_default = False
+            bint set_default = False,
+            bint intercept_stdlib_logging = True,
             ):
 
-        self.factory.set_level(self._str_to_level(level))
+        self.factory.set_level(<level_enum>level)
 
         if handlers:
             for h in handlers:
@@ -129,37 +182,37 @@ cdef class Logger:
                     self.factory.add_stdout_handler(
                         h.color,
                         h.pattern.encode(),
-                        self._str_to_level(h.level),
-                        self._str_to_level(h.max_level)
+                        <level_enum>h.level,
+                        <level_enum>h.max_level
                     )
 
                 elif isinstance(h, StderrHandler):
                     self.factory.add_stderr_handler(
                         h.color,
                         h.pattern.encode(),
-                        self._str_to_level(h.level)
+                        <level_enum>h.level
                     )
 
                 elif isinstance(h, ConsoleHandler):
                     self.factory.add_console_handler(
                         h.color,
                         h.pattern.encode(),
-                        self._str_to_level(h.max_stdout_level),
-                        self._str_to_level(h.min_level)
+                        <level_enum>h.max_stdout_level,
+                        <level_enum>h.min_level
                     )
 
                 elif isinstance(h, BasicConsoleHandler):
                     self.factory.add_basic_console_handler(
                         h.color,
                         h.pattern.encode(),
-                        self._str_to_level(h.level)
+                        <level_enum>h.level
                     )
 
                 elif isinstance(h, FileHandler):
                     self.factory.add_file_handler(
                         h.filename.encode(),
                         h.pattern.encode(),
-                        self._str_to_level(h.level),
+                        <level_enum>h.level,
                         h.overwrite
                     )
 
@@ -169,7 +222,7 @@ cdef class Logger:
                         h.max_size,
                         h.max_files,
                         h.pattern.encode(),
-                        self._str_to_level(h.level)
+                        <level_enum>h.level
                     )
                 else:
                     PyErr_SetString(PyExc_TypeError, b"Unknown handler type")
@@ -177,7 +230,7 @@ cdef class Logger:
             self.factory.add_basic_console_handler(
                     True,
                     pattern.encode(),
-                    self._str_to_level(level)
+                    <level_enum>level
                 )
 
         if color_scheme is not None:
@@ -197,28 +250,13 @@ cdef class Logger:
         #self._logger = new SpdLogger(self._logger_ptr)
         self._logger = SpdLogger(self._logger_ptr)
 
+        if (set_default and intercept_stdlib_logging):
+            redirect_pylog()
+
     #def __dealloc__(self):
     #    if self._logger != NULL:
     #        del self._logger
-    
-    cdef inline level_enum _str_to_level(self, str level):
-        if level.lower() == "trace":
-            return level_enum.trace
-        elif level.lower() == "debug":
-            return level_enum.debug
-        elif level.lower() == "info":
-            return level_enum.info
-        elif level.lower() == "warn":
-            return level_enum.warn
-        elif level.lower() == "error":
-            return level_enum.err
-        elif level.lower() == "critical":
-            return level_enum.critical
-        elif level.lower() == "off":
-            return level_enum.off
-        else:
-            raise ValueError(f"{level} is not a valid level.")
-    
+        
     cdef SpdLogger get_logger(self):
         return self._logger    
     
@@ -271,5 +309,5 @@ cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= "", bint fallback
 
 cdef void get_logger(SpdLogger &log, str name= "", bint fallback_to_default= False):
     cdef shared_ptr[logger] logger_ptr = registry_get_logger_ptr(name.encode(), fallback_to_default)
-    log = SpdLogger(logger_ptr)
+    log.get_logger().swap(logger_ptr )
  

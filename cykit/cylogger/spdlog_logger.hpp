@@ -143,7 +143,6 @@ namespace spdlog_internal {
         return message;
     }
 
-
     inline spdlog::source_loc py_caller_loc() {
         PyGILState_STATE gil = PyGILState_Ensure();
         PyFrameObject* frame = PyEval_GetFrame();
@@ -156,7 +155,7 @@ namespace spdlog_internal {
                     PyCodeObject* code = PyFrame_GetCode(caller);
                     if (!code) break;
                     const char* name = PyUnicode_AsUTF8(code->co_name);
-                    Py_DECREF(code);  // Only decref code, not frame
+                    Py_DECREF(code); 
                     if (name && strcmp(name, "<module>") != 0) break;
                     caller = PyFrame_GetBack(caller);
                 }
@@ -206,6 +205,107 @@ namespace spdlog_internal {
 
         PyGILState_Release(gil);
 
+        return spdlog::source_loc{filename, lineno, funcname};
+    }    
+    
+
+    inline spdlog::source_loc pylog_caller_loc() {
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyFrameObject* frame = PyEval_GetFrame();
+        PyFrameObject* caller = nullptr;
+        
+        if (frame) {
+    #if PY_VERSION_HEX >= 0x030B0000
+            caller = PyFrame_GetBack(frame);
+            
+            while (caller) {
+                PyCodeObject* code = PyFrame_GetCode(caller);
+                if (!code) break;
+                
+                PyObject* f_obj = code->co_filename;
+                const char* filename = "";
+                if (f_obj && PyUnicode_Check(f_obj)) {
+                    filename = PyUnicode_AsUTF8(f_obj);
+                }
+                                
+                bool is_logging = (strstr(filename, "logging") != nullptr && 
+                                  strstr(filename, "__init__.py") != nullptr);
+                
+                Py_DECREF(code);
+                
+                if (!is_logging) break; 
+                
+                caller = PyFrame_GetBack(caller);
+            }
+            
+            while (caller) {
+                PyCodeObject* code = PyFrame_GetCode(caller);
+                if (!code) break;
+                const char* name = PyUnicode_AsUTF8(code->co_name);
+                Py_DECREF(code);
+                if (name && strcmp(name, "<module>") != 0) break;
+                caller = PyFrame_GetBack(caller);
+            }
+    #else
+            caller = frame->f_back;
+            while (caller) {
+                PyCodeObject* code = caller->f_code;
+                if (!code) break;
+                
+                PyObject* f_obj = code->co_filename;
+                const char* filename = "";
+                if (f_obj && PyUnicode_Check(f_obj)) {
+                    filename = PyUnicode_AsUTF8(f_obj);
+                }
+                
+                bool is_logging = (strstr(filename, "logging") != nullptr && 
+                                  strstr(filename, "__init__.py") != nullptr);
+                
+                if (!is_logging) break;
+                
+                caller = caller->f_back;
+            }
+            
+            while (caller) {
+                PyCodeObject* code = caller->f_code;
+                if (!code) break;
+                const char* name = PyUnicode_AsUTF8(code->co_name);
+                if (name && strcmp(name, "<module>") != 0) break;
+                caller = caller->f_back;
+            }
+    #endif
+        }
+        
+        if (!caller) caller = frame;
+        
+        const char* filename = "<unknown>";
+        const char* funcname = "<module>";
+        int lineno = 0;
+        
+        if (caller) {
+    #if PY_VERSION_HEX >= 0x030B0000
+            PyCodeObject* code = PyFrame_GetCode(caller);
+    #else
+            PyCodeObject* code = caller->f_code;
+    #endif
+            if (code) {
+                PyObject* f_obj = code->co_filename;
+                if (f_obj && PyUnicode_Check(f_obj)) {
+                    const char* fullpath = PyUnicode_AsUTF8(f_obj);
+                    const char* slash = strrchr(fullpath, '/');
+                    filename = slash ? slash + 1 : fullpath;
+                }
+                PyObject* fn_obj = code->co_name;
+                if (fn_obj && PyUnicode_Check(fn_obj))
+                    funcname = PyUnicode_AsUTF8(fn_obj);
+                lineno = PyFrame_GetLineNumber(caller);
+    #if PY_VERSION_HEX >= 0x030B0000
+                Py_DECREF(code); 
+    #endif
+            }
+        }
+        
+        PyGILState_Release(gil);
         return spdlog::source_loc{filename, lineno, funcname};
     }
 }
@@ -542,6 +642,21 @@ do { \
         } \
     } while(0)
 
+#define SPDLOG_LOG_PY_LOGGER_D_IMPL(level, msg) \
+do { \
+        std::shared_ptr<spdlog::logger> __logger = LoggerRegistry::get_logger(); \
+        std::string __plain_str = msg ? std::string(msg) : std::string(); \
+        if (__logger->should_log(level)) { \
+            spdlog::source_loc __loc = spdlog_internal::pylog_caller_loc(); \
+            for (auto& __sink : __logger->sinks()) { \
+                if (__sink->should_log(level)) { \
+                    spdlog::details::log_msg __msg(__loc, __logger->name(), level, __plain_str); \
+                    __sink->log(__msg); \
+                } \
+            } \
+        } \
+    } while(0)
+
 // ==============================================================================================================
 
 
@@ -759,4 +874,23 @@ do { \
 
 #define CRITICAL_PYL(logger, fg_color, bg_color, effect, msg)\
     SPDLOG_LOG_COLOR_BG_FX_PY_IMPL(logger, spdlog::level::critical, fg_color, bg_color, effect, msg)
+
+
+#define TRACE_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::trace, msg)
+
+#define DEBUG_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::debug, msg)
+
+#define INFO_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::info, msg)
+
+#define WARN_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::warn, msg)
+
+#define ERROR_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::err, msg)
+
+#define CRITICAL_PY_LOG(msg)\
+    SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::critical, msg)
     

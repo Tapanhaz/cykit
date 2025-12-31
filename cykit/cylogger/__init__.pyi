@@ -1,36 +1,36 @@
 from typing import Optional, Literal, List
+from enum import IntEnum
 
-Level = Literal[
-    "trace",
-    "debug",
-    "info",
-    "warn",
-    "error",
-    "critical",
-    "off",
-]
+class Level(IntEnum):
+    TRACE = ...
+    DEBUG = ...
+    INFO = ...
+    WARN = ...
+    ERROR = ...
+    CRITICAL = ...
+    OFF = ...
 
 class LogHandler:
     color: bool
     pattern: str
-    level: str
+    level: Level
 
     def __init__(
         self,
         color: bool = True,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "trace",
+        level: Level = Level.TRACE,
     ) -> None: ...
 
 class StdoutHandler(LogHandler):
-    max_level: str
+    max_level: Level
 
     def __init__(
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "trace",
-        max_level: str = "info",
+        level: Level = Level.TRACE,
+        max_level: Level = Level.INFO,
     ) -> None: ...
 
 class StderrHandler(LogHandler):
@@ -38,7 +38,7 @@ class StderrHandler(LogHandler):
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "warn",
+        level: Level = Level.WARN,
     ) -> None: ...
 
 class BasicConsoleHandler(LogHandler):
@@ -46,19 +46,19 @@ class BasicConsoleHandler(LogHandler):
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "trace",
+        level: Level = Level.TRACE,
     ) -> None: ...
 
 class ConsoleHandler(LogHandler):
-    max_stdout_level: str
-    min_level: str
+    max_stdout_level: Level
+    min_level: Level
 
     def __init__(
         self,
         color: bool = True,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        max_stdout_level: str = "info",
-        min_level: str = "trace",
+        max_stdout_level: Level = Level.INFO,
+        min_level: Level = Level.TRACE,
     ) -> None: ...
 
 class FileHandler(LogHandler):
@@ -70,7 +70,7 @@ class FileHandler(LogHandler):
         filename: str,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "trace",
+        level: Level = Level.TRACE,
         overwrite: bool = False,
     ) -> None: ...
 
@@ -82,7 +82,7 @@ class RotatingFileHandler(FileHandler):
         self,
         filename: str,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: str = "trace",
+        level: Level = Level.TRACE,
         max_size: int = 1048576,
         max_files: int = 3,
     ) -> None: ...
@@ -109,11 +109,15 @@ class Logger:
     def __init__(
         self,
         name: str,
-        level: Level = "trace",
+        level: Level = Level.TRACE,
         handlers: Optional[List] = [],
         color_scheme: Optional[ColorScheme] = None,
         set_default: bool = False,
+        intercept_stdlib_logging: bool = True,
     ) -> None: ...
+    """
+    intercept_stdlib_logging will work only when set_default= True
+    """
     def trace(
         self,
         msg: str,

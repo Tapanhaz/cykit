@@ -88,6 +88,7 @@ cdef extern from "spdlog_logger.hpp" nogil:
     cdef cppclass SpdLogger:
         SpdLogger()
         SpdLogger(shared_ptr[logger]) except + nogil
+        shared_ptr[logger]& get_logger() except + nogil
 
         void trace(const char* msg, ...) except + nogil
         void trace(int color, const char* msg, ...) except + nogil
@@ -200,17 +201,32 @@ cdef extern from "spdlog_logger.hpp" nogil:
     void ERROR_PYL(SpdLogger logger, int fg_color, int bg_color, int effect, const char* msg)
     void CRITICAL_PYL(SpdLogger logger, int fg_color, int bg_color, int effect, const char* msg)
 
+    void TRACE_PY_LOG(const char* msg)
+    void DEBUG_PY_LOG(const char* msg)
+    void INFO_PY_LOG(const char* msg)
+    void WARN_PY_LOG(const char* msg)
+    void ERROR_PY_LOG(const char* msg)
+    void CRITICAL_PY_LOG(const char* msg)
 
+
+cpdef enum class Level:
+    TRACE = level_enum.trace
+    DEBUG = level_enum.debug
+    INFO = level_enum.info
+    WARN = level_enum.warn
+    ERROR = level_enum.err
+    CRITICAL = level_enum.critical
+    OFF = level_enum.off
 
 cdef class LogHandler:
     cdef:
         public bint color
         public str pattern
-        public str level
+        public Level level
 
 
 cdef class StdoutHandler(LogHandler):
-    cdef public str max_level
+    cdef public Level max_level
 
 
 cdef class StderrHandler(LogHandler):
@@ -223,8 +239,8 @@ cdef class BasicConsoleHandler(LogHandler):
 
 cdef class ConsoleHandler(LogHandler):
     cdef:
-        public str max_stdout_level
-        public str min_level
+        public Level max_stdout_level
+        public Level min_level
 
 
 cdef class FileHandler(LogHandler):
@@ -257,7 +273,6 @@ cdef class Logger:
         SpdLogger _logger
         shared_ptr[logger] _logger_ptr
     
-    cdef inline level_enum _str_to_level(self, str level)
     cdef SpdLogger get_logger(self)
 
     cpdef void trace(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
