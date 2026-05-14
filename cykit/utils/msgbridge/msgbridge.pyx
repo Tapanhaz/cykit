@@ -1,331 +1,443 @@
-
-
-from cython cimport bint
+from cykit.spsc_queue cimport SPSC_OK
 from cykit.common cimport (
-    Py_INCREF,
-    Py_DECREF,
-    Py_XDECREF,
-    PyErr_Clear,
-    PyErr_Print,
-    PyLong_Check,
-    PyLong_AsLong,
-    PyErr_SetString,
-    PyCallable_Check,
-    PyExc_ValueError,
-    Py_AddPendingCall,
-    PyExc_ImportError,
-    PyExc_RuntimeError,
-    PyObject_Vectorcall,
-    PyObject_CallFunction,
-    PyImport_ImportModule,
-    PyObject_GetAttrString,
-    PyBytes_FromStringAndSize,
-    PyObject_CallFunctionObjArgs
+    make_thread, 
+    buf_to_cbuf, 
+    str_to_cbuf, 
+    obj_to_cbuf,
+    Py_buffer,
+    PyBuffer_Release,
+    PyObject,
+    Py_DECREF
 )
 
+import asyncio
 
 
-cdef int _fire_and_forget_sync_callback(void* arg) noexcept:  ## ==>> This is only for very low count of (occasional) messages 
-    cdef:
-        PyObject* decoded = <PyObject*>arg
-        PyObject* args[1]
-        PyObject* result
+cdef inline void _thrded_reader_entry(void* arg) noexcept nogil:
+    (<ThreadedDispatcher>arg)._reader()
 
-    args[0] = decoded
-    result = PyObject_Vectorcall(global_sync_callback, args, 1, NULL)
-    Py_XDECREF(result)
-    Py_DECREF(decoded)  
+cdef inline void _thrded_reader_var_entry(void* arg) noexcept nogil:
+    (<ThreadedDispatcher>arg)._reader_var()
 
-    return 0
 
-cdef class CyMsgBroker:
+
+cdef class AsyncDispatcher:
+
+    def __cinit__(
+                self,
+                object callback,
+                size_t capacity= 16384,
+                size_t slot_size= 2048,
+                bint overwrite= False,
+                bint zerocopy= False,
+                bint variable_size= False
+                ):
+
+        self._q = SPSCQueue(
+                        slot_size= slot_size,
+                        capacity= capacity,
+                        overwrite= overwrite,
+                        zerocopy= zerocopy
+                        )
+                        
+        self._bridge.sock        = -1
+        self._callback           = callback
+        self._sock               = None
+        self._task               = None
+
+        if variable_size:
+            self.push = <ad_push_fn_t>self.__try_push_var
+            self._pop_func = <ad_pop_fn_t>self._try_pop_var        
+        else:
+            self.push = <ad_push_fn_t>self.__try_push
+            self._pop_func = <ad_pop_fn_t>self._try_pop
+
+    cpdef void setup(self, str host='127.0.0.1'):
+        import socket as _socket
+
+        loop = asyncio.get_running_loop()
+
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        sock.bind((host, 0))
+        self._sock = sock
+
+        ip, port = sock.getsockname()
+        self._bridge.addr.sin_family      = 2
+        self._bridge.addr.sin_port        = htons(port)
+        self._bridge.addr.sin_addr.s_addr = inet_addr(ip.encode())
+        self._bridge.sock                 = sock.fileno()
+
+        self._task  = loop.create_task(self._reader(loop, sock))
+
+    cdef void __try_push(self, const char* data, size_t size) noexcept nogil:
+        if self._q.try_push(data, size) > 0:
+            sig_notify(&self._bridge)
     
+    cdef void __try_push_var(self, const char* data, size_t size) noexcept nogil:
+        if self._q.try_push_var(data, size) == SPSC_OK:
+            sig_notify(&self._bridge)
+
+    async def _reader(self, loop, sock):
+        cdef bytes msg
+
+        while True:
+            msg = self._pop_func(self)
+            if msg is None:
+                await loop.sock_recv(sock, 1) 
+            else:
+                await self._callback(msg)
+
+    cdef inline bytes _try_pop(self) noexcept:
+        cdef:
+            char* buf
+            size_t size 
+
+        if self._q.try_pop(&buf, &size) == SPSC_OK:
+            return buf[:size]
+        return None
+
+    cdef inline bytes _try_pop_var(self) noexcept:
+        cdef:
+            char* buf
+            size_t size 
+
+        if self._q.try_pop(&buf, &size) == SPSC_OK:
+            return buf[:size]
+        return None    
+
+    def close(self)-> None:        
+        if self._task is not None:
+            task = self._task
+            self._task = None
+            loop = task.get_loop()
+
+            def _finalize():
+                if not task.done():
+                    task.cancel()
+
+            loop.call_soon_threadsafe(_finalize)
+
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+    
+    def __dealloc__(self):
+        self.close()
+
+
+
+
+
+cdef class SyncDispatcher:
     def __cinit__(
             self,
             object callback,
-            bint sync_blocking_callback = True,
-            object loop = None,
-            size_t c_callback_ptr = 0 
-            ):
-
-        self._c_callback = <c_callback_func>c_callback_ptr
-        self._use_c_callback = (c_callback_ptr != 0)
-
-        if not self._use_c_callback:
-            if callback is None:
-                PyErr_SetString(PyExc_ValueError, b"Either callback or c_callback_ptr must be provided\n")
-                return
-            
-            self._callback = <PyObject*>callback
-            if self._callback != NULL:
-                Py_INCREF(self._callback)
-        else:
-            self._callback = NULL
-
-        self._is_async = False
-        self._sync_blocking_callback = sync_blocking_callback
-
-        self._asyncio_module = NULL
-        self._get_async_loop_func = NULL
-        self._create_task_method = NULL
-        self._call_soon_threadsafe_func = NULL
-        self._run_coroutine_threadsafe_func = NULL
-        self._loop = NULL
-
-        if loop:
-            self._loop = <PyObject*>loop
-            Py_INCREF(self._loop)
-
-        self._msgspec_module = NULL
-        self._msgspec_json_decoder  = NULL
-        self._msgspec_decode_method = NULL
-
-        if self.__init_class() == 0:
-            return
-
-    cdef inline int __init_class(self):
-        if self._use_c_callback:
-            self._process_message_func = <void (*)(CyMsgBroker, char*, size_t) noexcept nogil>self._process_message_c
-            return 1
-
-        if self._callback == NULL or not PyCallable_Check(self._callback):
-            PyErr_SetString(PyExc_ValueError, b"Callback is either NULL or not Callable. \n")
-            return 0
-        
-        if self.__init_methods() == 0:
-            return 0
-
-        if self._is_async_callback():
-            self._is_async = True
-            
-            if self.__init_async() == 0:
-                return 0
-            
-            if self._loop == NULL:
-                self._loop = self._get_loop()
-                if self._loop != NULL:
-                    Py_INCREF(self._loop)
-                else:
-                    return 0
-            
-            if self._loop != NULL:
-                self._call_soon_threadsafe_func = PyObject_GetAttrString(self._loop, "call_soon_threadsafe")
-                if self._call_soon_threadsafe_func != NULL:
-                    Py_INCREF(self._call_soon_threadsafe_func)
-                else:
-                    PyErr_SetString(PyExc_ValueError, b"Method call soon threadsafe isn't found. \n")
-                    return 0
-            
-        self._register_output_func()
-        self._process_message_func = <void (*)(CyMsgBroker, char*, size_t) noexcept nogil>self._process_message_py
-
-        return 1
-
-    cdef inline int __init_async(self):
-        self._asyncio_module = PyImport_ImportModule("asyncio")
-        if self._asyncio_module == NULL:
-            PyErr_Print()
-            return 0     
-
-        self._get_async_loop_func = PyObject_GetAttrString(self._asyncio_module, "get_running_loop")
-        if self._get_async_loop_func == NULL:
-            PyErr_Clear()
-            self._get_async_loop_func = PyObject_GetAttrString(self._asyncio_module, "get_event_loop")
-            if self._get_async_loop_func == NULL:
-                PyErr_Print()
-                return 0
-        
-        self._create_task_method= PyObject_GetAttrString(self._asyncio_module, "create_task")
-        if self._create_task_method == NULL:
-            PyErr_Print()
-            return 0
-        
-        self._run_coroutine_threadsafe_func = PyObject_GetAttrString(self._asyncio_module, "run_coroutine_threadsafe")
-        if self._run_coroutine_threadsafe_func == NULL:
-            PyErr_Print()
-            return 0
-
-        Py_INCREF(self._asyncio_module)
-        Py_INCREF(self._get_async_loop_func)
-        Py_INCREF(self._create_task_method)
-        Py_INCREF(self._run_coroutine_threadsafe_func)
-
-        return 1
+            size_t capacity      = 16384,
+            size_t slot_size     = 2048,
+            bint zerocopy        = False,
+            bint overwrite       = False,
+            bint variable_size   = False,
+            bint daemon       = False
+        ):
     
-    cdef inline int __init_methods(self):
-        cdef PyObject* json_module
+        self._callback      = callback
+        self._variable_size = variable_size
+        self._daemon = daemon
 
-        self._msgspec_module = PyImport_ImportModule("msgspec")
-        if self._msgspec_module == NULL:
-            PyErr_SetString(PyExc_ImportError, b"Module msgspec is not found. \n")
-            return 0
-        
-        json_module = PyObject_GetAttrString(self._msgspec_module, "json")
-        if json_module == NULL:
-            PyErr_SetString(PyExc_ValueError, b"msgspec.json is not available. \n")
-            return 0
-            
-        self._msgspec_json_decoder = PyObject_GetAttrString(json_module, "Decoder")
-        if self._msgspec_json_decoder == NULL:
-            PyErr_SetString(PyExc_ValueError, b"msgspec.json.Decoder is not available. \n")
-            Py_DECREF(json_module)
-            return 0
-            
-        Py_DECREF(json_module)
-                
-        self._msgspec_json_decoder = PyObject_CallFunction(self._msgspec_json_decoder, NULL)
-        if self._msgspec_json_decoder == NULL:
-            PyErr_SetString(PyExc_ValueError, b"msgspec.json.Decoder() is not available. \n")
-            return 0
-            
-        self._msgspec_decode_method = PyObject_GetAttrString(self._msgspec_json_decoder, "decode")
-        if self._msgspec_decode_method == NULL:
-            PyErr_SetString(PyExc_ValueError, b"msgspec.json.Decoder().decode() method is not available. \n")
-            return 0
-        
-        return 1
-            
-    cdef inline int _is_async_callback(self):
-        cdef:
-            long flags
-            PyObject* code_obj
-            PyObject* flags_obj
-            
-        code_obj = PyObject_GetAttrString(self._callback, b"__code__")
-        if code_obj == NULL:
-            PyErr_Clear()  
-            return 0
+        self._bridge.sock        = -1
+        self._sock               = None
 
-        flags_obj = PyObject_GetAttrString(code_obj, b"co_flags")
-        Py_DECREF(code_obj)
+        self._q = SPSCQueue(
+                        slot_size= slot_size,
+                        capacity= capacity,
+                        overwrite= overwrite,
+                        zerocopy= zerocopy
+                        )
 
-        if flags_obj == NULL:
-            PyErr_Clear()
-            return 0
+        if variable_size:
+            self.push = <sd_push_fn_t>self.__try_push_var     
+        else:
+            self.push = <sd_push_fn_t>self.__try_push
 
-        if not PyLong_Check(flags_obj):
-            Py_DECREF(flags_obj)
-            return 0
+    cpdef void setup(self, str host='127.0.0.1'):
+        import socket as _socket
+        import threading
 
-        flags = PyLong_AsLong(flags_obj)
-        Py_DECREF(flags_obj)
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setblocking(True)
+        sock.bind((host, 0))
+        self._sock = sock
 
-        return (flags & 0X80) != 0 or (flags & 0X100) != 0
+        ip, port = sock.getsockname()
+        self._bridge.addr.sin_family      = 2
+        self._bridge.addr.sin_port        = htons(port)
+        self._bridge.addr.sin_addr.s_addr = inet_addr(ip.encode())
+        self._bridge.sock                 = sock.fileno()
+
+        if self._variable_size:
+            threading.Thread(target= self._try_pop_var, daemon= self._daemon).start()
+        else:
+            threading.Thread(target= self._try_pop, daemon= self._daemon).start()
+
+
+    cdef void __try_push(self, const char* data, size_t size) noexcept nogil:
+        if self._q.try_push(data, size) > 0:
+            sig_notify(&self._bridge)
     
-    cdef PyObject* _get_loop(self) noexcept:
-        if self._get_async_loop_func != NULL:
-            loop = PyObject_CallFunctionObjArgs(self._get_async_loop_func, NULL)
-            if loop == NULL:
-                PyErr_SetString(PyExc_ValueError, b"Could not get running event loop. \n")
-                return NULL
-        else:
-            PyErr_SetString(PyExc_RuntimeError, b"Could not get event loop. \n")
-            return NULL
-        return loop      
+    cdef void __try_push_var(self, const char* data, size_t size) noexcept nogil:
+        if self._q.try_push_var(data, size) > 0:
+            sig_notify(&self._bridge)
 
-    cdef void _register_output_func(self):
-        if self._is_async:
-            self._callback_func = <void (*)(CyMsgBroker, PyObject*)>self._send_async
-        else:
-            if self._sync_blocking_callback:
-                self._callback_func = <void (*)(CyMsgBroker, PyObject*)>self._send_sync_blocking
+    cpdef void _try_pop(self):
+        cdef bytes msg
+
+        while True:
+            msg = self.__try_pop()
+            if msg is None:
+                with nogil:
+                    sig_wait(&self._bridge)
             else:
-                self._callback_func = <void (*)(CyMsgBroker, PyObject*)>self._send_sync
-                self._register_sync_callback()
+                self._callback(msg)
     
-    cdef void _register_sync_callback(self):
-        global global_sync_callback
-        global_sync_callback = self._callback
-        Py_INCREF(global_sync_callback)
-    
-    cdef void _send_async(self, PyObject* data):
+    cpdef void _try_pop_var(self):
+        cdef bytes msg
+
+        while True:
+            msg = self.__try_pop_var()
+            if msg is None:
+                with nogil:
+                    sig_wait(&self._bridge)
+            else:
+                self._callback(msg)
+
+    cdef inline bytes __try_pop(self):
         cdef:
-            PyObject* coro
-            PyObject* result
-            PyObject* args[1]
-            PyObject* args2[2]
-
-        args[0] = data
-        coro = PyObject_Vectorcall(self._callback, args, 1, NULL)
-
-        if coro == NULL:
-            PyErr_Print()
-            Py_DECREF(data)
-            return
-        args2[0] = self._create_task_method
-        args2[1] = coro
-
-        result = PyObject_Vectorcall(self._call_soon_threadsafe_func, args2, 2, NULL)
-
-        if result == NULL:
-            PyErr_Print()
-        else:
-            Py_DECREF(result)
-
-        Py_DECREF(coro)
-        Py_DECREF(data)
-    
-    cdef void _send_sync(self, PyObject* data):
-        Py_INCREF(data)   
-        Py_AddPendingCall(_fire_and_forget_sync_callback, <void*>data)
-
-        Py_DECREF(data)
+            char* buf 
+            size_t size 
         
-    cdef void _send_sync_blocking(self, PyObject* arg):
+        if self._q.try_pop(&buf, &size) == SPSC_OK:
+            return buf[:size]
+        return None
+    
+    cdef inline bytes __try_pop_var(self):
         cdef:
-            PyObject* result
-            PyObject* args[1]
+            char* buf 
+            size_t size 
         
-        args[0] = arg
-        result = PyObject_Vectorcall(self._callback, args, 1, NULL)
-        
-        if result != NULL:
-            Py_DECREF(result)
+        if self._q.try_pop_var(&buf, &size) == SPSC_OK:
+            return buf[:size]
+        return None
+    
+    cpdef void close(self):
+        sig_notify(&self._bridge)
 
-        Py_DECREF(arg)
-    
-    cdef void _process_message_c(self, char* data, size_t size) noexcept nogil:
-        self._c_callback(data, size)
-    
-    cdef void _process_message_py(self, char* data, size_t size) noexcept with gil:
-        cdef:
-            PyObject* py_bytes = PyBytes_FromStringAndSize(data, size)
-            PyObject* decoded_data = PyObject_CallFunction(self._msgspec_decode_method, "O", py_bytes)
-            PyObject* result
-
-        Py_DECREF(py_bytes)
-        self._callback_func(self, decoded_data)
-    
-    cdef void process_message(self, char* data, size_t size) noexcept nogil:
-        self._process_message_func(self, data, size)
-    
     def __dealloc__(self):
-        if self._callback != NULL:
-            Py_DECREF(self._callback)
+        self.close()
 
-        if self._asyncio_module != NULL:
-            Py_XDECREF(self._asyncio_module)
 
-        if self._get_async_loop_func != NULL:
-            Py_XDECREF(self._get_async_loop_func)
 
-        if self._create_task_method != NULL:
-            Py_XDECREF(self._create_task_method)
-        
-        if self._call_soon_threadsafe_func != NULL: 
-            Py_XDECREF(self._call_soon_threadsafe_func)
-        
-        if self._loop != NULL:
-            Py_DECREF(self._loop)
 
-        if self._msgspec_module != NULL:
-            Py_XDECREF(self._msgspec_module)
+
+cdef class ThreadedDispatcher:
+
+    def __cinit__(
+            self,
+            object callback,
+            size_t capacity      = 16384,
+            size_t slot_size     = 2048,
+            bint zerocopy        = False, 
+            bint block_on_full   = False,
+            bint overwrite       = False,
+            bint variable_size   = False
+        ):
+
+        self._callback      = callback
+        self._variable_size = variable_size
+
+        self._q = SPSCQueue(
+            slot_size     = slot_size,
+            capacity      = capacity,
+            zerocopy      = zerocopy,
+            overwrite     = overwrite,
+            block_on_full = block_on_full
+        )
+
+        if variable_size:
+            self.push = <td_push_fn_t>self._push_var
+        else:
+            self.push = <td_push_fn_t>self._push
+
+    cpdef void setup(self):
+        if self._variable_size:
+            self._thread = make_thread(_thrded_reader_var_entry, <void*>self)
+        else:
+            self._thread = make_thread(_thrded_reader_entry, <void*>self)
         
-        if self._msgspec_json_decoder != NULL:
-            Py_XDECREF(self._msgspec_json_decoder)
+        self._thread.detach()
+
+    cdef void _push(self, const char* data, size_t size) noexcept nogil:
+        self._q.push(data, size)
+
+    cdef void _push_var(self, const char* data, size_t size) noexcept nogil:
+        self._q.push_var(data, size)
+
+    cdef void _reader(self) noexcept nogil:
+        cdef:
+            char*  buf
+            size_t size            
+
+        while True:
+            if self._q.pop_borrow(&buf, &size) != SPSC_OK:
+                break
+
+            with gil:
+                self._callback(buf[:size])
+
+            self._q.pop_commit()
+            
+
+    cdef void _reader_var(self) noexcept nogil:
+        cdef:
+            char*  buf
+            size_t size
+
+        while True:
+            if self._q.pop_var(&buf, &size) != SPSC_OK:
+                break
+            with gil:
+                self._callback(buf[:size])
+
+    cpdef void close(self):
+        self._q.close()
+
+        with nogil:
+            if self._thread.joinable():
+                self._thread.join()
+
+    def __dealloc__(self):
+        self.close()
+
+
+
+## Only for testing purpose ::
+
+cdef class AsyncQueue:        
+    def __init__(
+            self,
+            object loop= None,
+            size_t slot_size= 1024,
+            size_t capacity= 16384,
+            bint overwrite= False,
+            bint zerocopy= False,
+            bint block_on_full= False
+        ):
+
+        self._q = SPSCQueue(
+                        slot_size,
+                        capacity,
+                        overwrite,
+                        zerocopy,
+                        block_on_full
+                    )
+
+        self._lock = asyncio.Lock()
+        self._notify_cond = asyncio.Condition(self._lock)
+
+        if loop is None:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                raise RuntimeError(
+                    "AsyncQueue must be created inside a running event loop."
+                )
+        else:
+            self._loop = loop
+    
+    cpdef start_dispatcher(self, object callback):
+        self._callback = callback        
+        self._task = self._loop.create_task(self.__dispatch()) 
+
+    async def push_buf(self, object msg):
+        cdef:
+            Py_buffer view
+            const char* data 
+            size_t size
         
-        if self._msgspec_decode_method != NULL:
-            Py_XDECREF(self._msgspec_decode_method)
+        view.buf = NULL
+
+        try:
+            if buf_to_cbuf(msg, &view, &data, &size)!= -1:
+                if self._q.try_push(data, size) == SPSC_OK:
+
+                    async with self._notify_cond:
+                        self._notify_cond.notify()
+        finally:
+            if view.buf != NULL:
+                PyBuffer_Release(&view)
+
+    async def push_obj(self, object msg):
+        cdef:
+            PyObject* pb = NULL
+            const char* data
+            size_t size
+
+        try:
+            if obj_to_cbuf(msg, &pb, &data, &size) == 0:
+                if self._q.try_push(data, size) == SPSC_OK:
+                    async with self._notify_cond:
+                        self._notify_cond.notify()
+
+        finally:
+            if pb != NULL:
+                Py_DECREF(pb)
+    
+    async def push_str(self, object msg):
+        cdef:
+            const char* data
+            size_t size
+
+        if str_to_cbuf(msg, &data, &size) == 0:
+            if self._q.try_push(data, size) == SPSC_OK:
+                async with self._notify_cond:
+                    self._notify_cond.notify()
+
+
+    async def pop(self):
+        cdef:
+            char* data 
+            size_t size 
         
-        if global_sync_callback != NULL:
-            Py_DECREF(global_sync_callback)
+        while True:
+            if self._q.try_pop(&data, &size) == SPSC_OK:
+                return data[:size]
+            else:
+                async with self._notify_cond:
+                    await self._notify_cond.wait()
+
+    
+    async def __dispatch(self):
+        cdef:
+            char* data 
+            size_t size 
+
+        while True:
+            if self._q.try_pop(&data, &size) == SPSC_OK:
+                await self._callback(data[:size])
+            
+            else:
+                async with self._notify_cond:
+                    await self._notify_cond.wait()     
+
+
+    async def shutdown(self, *excinfo):
+        async with self._notify_cond:
+            self._notify_cond.notify_all()
+
+        if self._task is not None:
+            self._task.cancel()
+
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
