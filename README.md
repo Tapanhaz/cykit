@@ -30,6 +30,20 @@ It is a thin wrapper around [spdlog](https://github.com/gabime/spdlog).
 
 Detailed examples can be found here: [cykit/examples/cylogger](https://github.com/Tapanhaz/cykit/tree/main/examples/cylogger)
 
+## cykit.spsc_queue (cython only)
+
+Lock-free SPSC queue. (detailed documentation coming in a later update)
+
+## cykit.utils.msgbridge (cython only)
+
+Multi-mode message dispatcher to bridge Cython and Python, built on a lock-free SPSC queue.
+(detailed documentation coming in a later update)
+
+## cykit.utils.signal_handler (cython only)
+
+Boost.Asio based cross platform signal handler
+(detailed documentation to follow)
+
 ## Contribution
 
 Contributions are welcome! Any kind of help — bug reports / suggestions, feature requests, or pull requests—is appreciated.
