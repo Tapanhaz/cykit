@@ -1,18 +1,22 @@
 [build-system]
 requires = [
-  "setuptools>=64.0.3",
+  "setuptools>=82.0.1",
   "wheel",
   "Cython>=3.2",
-  "cmake>=3.28.3"
+  "cmake>=4.3.2"
 ]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cykit"
-version = "0.0.6"
+version = "0.0.7"
 description = "Cython utilities collection"
 readme = "README.md"
-license = {text = "MIT OR Apache-2.0"}
+license = "MIT OR Apache-2.0"
+license-files = [
+                    "LICENSE-MIT",
+                    "LICENSE-APACHE"
+                ]
 authors = [
   { name = "Tapan Hazarika", email = "tapanhaz@gmail.com" }
 ]

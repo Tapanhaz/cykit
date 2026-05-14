@@ -41,6 +41,7 @@ class BuildExt(build_ext):
                 continue
             self.build_cmake(cmake_source_dir)
 
+
     def build_cmake(self, cmake_source_dir: Path):
         cmake_source_dir = cmake_source_dir.resolve()
         cmake_build_dir = cmake_source_dir / "build"
@@ -120,13 +121,6 @@ class BuildExt(build_ext):
         self.vendor_headers(cmake_source_dir)
 
         print(f"{cmake_source_dir.name} built successfully")
-
-        #print(f"\n{'='*60}")
-        #print(f"DEBUG: Contents of {cmake_build_dir}:")
-        #for item in cmake_build_dir.rglob("*"):
-        #    if item.is_file():
-        #        print(f"  {item.relative_to(cmake_build_dir)}")
-        #print(f"{'='*60}\n")
 
         if platform.system() == "Windows":
             search_paths = [cmake_build_dir / "Release", cmake_build_dir]
@@ -267,7 +261,6 @@ class BuildExt(build_ext):
 
 
 def get_compile_flags():
-    """Get platform-specific compile flags"""
     if platform.system() == "Windows":
         return [
             "/utf-8",
@@ -292,7 +285,6 @@ def get_compile_flags():
 
 
 def get_link_flags():
-    """Get platform-specific link flags"""
     if platform.system() == "Windows":
         return ["/LTCG"]
     else:
@@ -303,6 +295,8 @@ def get_link_flags():
 
 
 cylogger_lib_dir = "cykit/cylogger"
+boost_include_dir = "cykit/utils/boost/include"
+
 
 compile_flags = get_compile_flags()
 link_flags = get_link_flags()
@@ -326,6 +320,14 @@ extensions = [
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
         language="c++",
+    ),
+    Extension(
+        "cykit.utils.signal_handler.signal_handler",
+        sources=["cykit/utils/signal_handler/signal_handler.pyx"],
+        extra_compile_args=compile_flags,
+        extra_link_args=link_flags,
+        language="c++",
+        include_dirs=[boost_include_dir],
     ),
     Extension(
         "cykit.spsc_queue.spsc_queue",
@@ -374,7 +376,7 @@ if "CYKIT_OPTIMIZE" in __import__("os").environ:
 
 setup(
     name="cykit",
-    version="0.0.6",
+    version="0.0.7",
     packages=find_packages(),
     ext_modules=cythonize(
         extensions,
