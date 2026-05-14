@@ -9,7 +9,9 @@ cdef extern from "Python.h":
     void Py_XDECREF(PyObject*)
     
     char* PyBytes_AsString(object)
+    char* PyBytes_AS_STRING(PyObject*)
     Py_ssize_t PyBytes_Size(object)
+    Py_ssize_t PyBytes_GET_SIZE(PyObject*)
     PyObject* PyBytes_FromStringAndSize(char*, Py_ssize_t)
     PyObject* PyUnicode_FromString(const char*)
     
@@ -41,6 +43,17 @@ cdef extern from "Python.h":
     long PyLong_AsLong(PyObject* obj) 
     PyObject* PyLong_FromLong(long v) 
 
+    int PyObject_GetBuffer(PyObject*, Py_buffer*, int)
+    void PyBuffer_Release(Py_buffer*)
+    const char* PyUnicode_AsUTF8AndSize(PyObject*, Py_ssize_t*)
+    int PyBytes_AsStringAndSize(PyObject*, char**, Py_ssize_t*)
+    PyObject* PyObject_Bytes(PyObject *o)
+    int PyBUF_SIMPLE
+
+    ctypedef struct Py_buffer:
+        void* buf
+        Py_ssize_t len
+
 cdef extern from "<atomic>" namespace "std" nogil:
     cdef enum memory_order:
         memory_order_relaxed
@@ -66,5 +79,29 @@ cdef extern from "<atomic>" namespace "std" nogil:
     void atomic_notify_one[uint64_t](const atomic[uint64_t]* obj, uint64_t val) noexcept
     void atomic_notify_one[uint64_t](volatile atomic[uint64_t]* obj) noexcept
 
+cdef extern from "stdlib.h" nogil:
+    void* aligned_alloc(size_t alignment, size_t size)
 
-cdef bint is_power_of_two(uint32_t n) nogil
+
+cdef extern from "<thread>" namespace "std" nogil:
+    cdef cppclass thread:
+        thread() noexcept
+        void join() noexcept
+        void detach() noexcept
+        bint joinable() noexcept
+
+cdef extern from *:
+    """
+    #include <thread>
+
+    template<typename F, typename A>
+    std::thread make_thread(F f, A a) { return std::thread(f, a); }
+    """
+    thread make_thread[F, A](F f, A a) noexcept nogil
+
+
+cdef bint is_power_of_two(uint32_t n) noexcept nogil
+
+cdef inline int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except +
+cdef inline int str_to_cbuf(object msg, const char** data, size_t* size) except +
+cdef inline int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except +
