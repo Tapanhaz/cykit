@@ -335,6 +335,7 @@ extensions = [
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
         language="c++",
+        include_dirs=[boost_include_dir],
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
@@ -342,6 +343,7 @@ extensions = [
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
         language="c++",
+        include_dirs=[boost_include_dir],
     ),
 ]
 
