@@ -8,6 +8,17 @@ from Cython.Build import cythonize
 from setuptools.command.build_ext import build_ext
 from setuptools import setup, Extension, find_packages
 
+USE_SYS_BOOST = os.environ.get("USE_SYS_BOOST", "0").strip() not in (
+    "",
+    "0",
+    "false",
+    "False",
+    "no",
+)
+
+if USE_SYS_BOOST:
+    print("===> USE_SYS_BOOST: Skipping Boost vendoring; using system Boost headers")
+
 
 class BuildExt(build_ext):
 
@@ -39,8 +50,14 @@ class BuildExt(build_ext):
 
             if "build" in cmake_source_dir.parts:
                 continue
-            self.build_cmake(cmake_source_dir)
 
+            if USE_SYS_BOOST and cmake_source_dir.name == "boost":
+                print(
+                    f"===> USE_SYS_BOOST: skipping CMake build for {cmake_source_dir}"
+                )
+                continue
+
+            self.build_cmake(cmake_source_dir)
 
     def build_cmake(self, cmake_source_dir: Path):
         cmake_source_dir = cmake_source_dir.resolve()
@@ -294,8 +311,24 @@ def get_link_flags():
         return flags
 
 
+common_macros = []
+
+if platform.system() == "Windows":
+    common_macros.extend(
+        [
+            ("_WIN32_WINNT", "0x0A00"),
+            ("WIN32_LEAN_AND_MEAN", None),
+            ("NOMINMAX", None),
+        ]
+    )
+
 cylogger_lib_dir = "cykit/cylogger"
-boost_include_dir = "cykit/utils/boost/include"
+
+
+if USE_SYS_BOOST:
+    boost_include_dir = ""
+else:
+    boost_include_dir = "cykit/utils/boost/include"
 
 
 compile_flags = get_compile_flags()
@@ -313,6 +346,7 @@ extensions = [
         library_dirs=[cylogger_lib_dir],
         runtime_library_dirs=["$ORIGIN"] if platform.system() != "Windows" else None,
         include_dirs=[cylogger_lib_dir, f"{cylogger_lib_dir}/include"],
+        define_macros=common_macros,
     ),
     Extension(
         "cykit.common",
@@ -328,6 +362,7 @@ extensions = [
         extra_link_args=link_flags,
         language="c++",
         include_dirs=[boost_include_dir],
+        define_macros=common_macros,
     ),
     Extension(
         "cykit.spsc_queue.spsc_queue",
@@ -336,6 +371,7 @@ extensions = [
         extra_link_args=link_flags,
         language="c++",
         include_dirs=[boost_include_dir],
+        define_macros=common_macros,
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
@@ -344,6 +380,7 @@ extensions = [
         extra_link_args=link_flags,
         language="c++",
         include_dirs=[boost_include_dir],
+        define_macros=common_macros,
     ),
 ]
 
@@ -387,30 +424,5 @@ setup(
     ),
     cmdclass={"build_ext": BuildExt},
     include_package_data=True,
-    package_data={
-        "cykit": [
-            "*.pxd",
-            "*.pyi",
-        ],
-        "cykit.cylogger": [
-            "*.pxd",
-            "*.pyi",
-            "*.hpp",
-            "*.so",
-            "*.so.*",
-            "*.dll",
-            "*.dylib",
-            "*.*.dylib",
-            "*.*.*.dylib",
-            "*.lib",
-            "cylogger.lib",
-            "libcylogger.so*",
-            "libcylogger.dylib*",
-            "libcylogger.0.dylib",
-            "cylogger.dll",
-            "include/**/*.h",
-            "include/**/*.hpp",
-        ],
-    },
     zip_safe=False,
 )
