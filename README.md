@@ -23,26 +23,33 @@ pip install cykit
 
 ## Components
 
-## cykit.cylogger
+### [cykit.cylogger](https://github.com/Tapanhaz/cykit/tree/main/cykit/cylogger)
 
 `cylogger` is the initial component of the `cykit` collection.  
 It is a thin wrapper around [spdlog](https://github.com/gabime/spdlog).
 
 Detailed examples can be found here: [cykit/examples/cylogger](https://github.com/Tapanhaz/cykit/tree/main/examples/cylogger)
 
-## cykit.spsc_queue (cython only)
+### [cykit.spsc_queue (cython only)](https://github.com/Tapanhaz/cykit/tree/main/cykit/spsc_queue)
 
 Lock-free SPSC queue. (detailed documentation coming in a later update)
 
-## cykit.utils.msgbridge (cython only)
+### [cykit.utils.msgbridge (cython only)](https://github.com/Tapanhaz/cykit/tree/main/cykit/utils/msgbridge)
 
 Multi-mode message dispatcher to bridge Cython and Python, built on a lock-free SPSC queue.
 (detailed documentation coming in a later update)
 
-## cykit.utils.signal_handler (cython only)
+### [cykit.utils.signal_handler (cython only)](https://github.com/Tapanhaz/cykit/tree/main/cykit/utils/signal_handler)
 
 Boost.Asio based cross platform signal handler
 (detailed documentation to follow)
+
+### [cykit.utils.boost](https://github.com/Tapanhaz/cykit/tree/main/cykit/utils/boost)
+
+A vendored, dependency-resolved subset of Boost headers. Boost is provided as a curated header set to support Cython/C++
+interop modules and to allow reuse across other projects without requiring a system-wide Boost installation..
+
+Current version :: Boost 1.87.0
 
 ## Contribution
 
