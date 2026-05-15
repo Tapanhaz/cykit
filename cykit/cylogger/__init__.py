@@ -9,7 +9,7 @@ from cykit.cylogger.cylogger import (
     FileHandler,
     RotatingFileHandler,
     ColorScheme,
-    Level
+    Level,
 )
 
 
@@ -24,7 +24,7 @@ __all__ = [
     FileHandler,
     RotatingFileHandler,
     ColorScheme,
-    Level
+    Level,
 ]
 
 
