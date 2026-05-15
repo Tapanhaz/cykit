@@ -9,7 +9,8 @@ from cykit.common cimport (
     memory_order_acquire,
     memory_order_release,
     memory_order_relaxed,
-    aligned_alloc
+    aligned_alloc_,
+    aligned_free_
 )
 
 from cykit.utils.signal_handler cimport (
@@ -67,8 +68,8 @@ cdef class SPSCQueue:
 
         self._q.running.store(1, memory_order_relaxed)
 
-        self._q.slots = <SPSCSlot*>aligned_alloc(64, capacity * sizeof(SPSCSlot))
-        self._q.slot_bufs = <char*>aligned_alloc(64, capacity * slot_size)
+        self._q.slots = <SPSCSlot*>aligned_alloc_(64, capacity * sizeof(SPSCSlot))
+        self._q.slot_bufs = <char*>aligned_alloc_(64, capacity * slot_size)
 
         memset(self._q.slot_bufs, 0, capacity * slot_size)
 
@@ -588,10 +589,10 @@ cdef class SPSCQueue:
         atomic_notify_one(&self._q.head)
 
         if self._q.slot_bufs != NULL:
-            free(self._q.slot_bufs)
+            aligned_free_(self._q.slot_bufs) 
             self._q.slot_bufs = NULL
         if self._q.slots != NULL:
-            free(self._q.slots)
+            aligned_free_(self._q.slots)
             self._q.slots = NULL
         if self._q.assemble_buf != NULL:
             free(self._q.assemble_buf)
