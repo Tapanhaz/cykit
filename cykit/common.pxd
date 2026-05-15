@@ -79,8 +79,20 @@ cdef extern from "<atomic>" namespace "std" nogil:
     void atomic_notify_one[uint64_t](const atomic[uint64_t]* obj, uint64_t val) noexcept
     void atomic_notify_one[uint64_t](volatile atomic[uint64_t]* obj) noexcept
 
-cdef extern from "stdlib.h" nogil:
-    void* aligned_alloc(size_t alignment, size_t size)
+cdef extern from *:
+    """
+    #ifdef _WIN32
+        #include <malloc.h>
+        #define aligned_alloc_(alignment, size)  _aligned_malloc(size, alignment)
+        #define aligned_free_(ptr)               _aligned_free(ptr)
+    #else
+        #include <stdlib.h>
+        #define aligned_alloc_(alignment, size)  aligned_alloc(alignment, size)
+        #define aligned_free_(ptr)               free(ptr)
+    #endif
+    """ 
+    void* aligned_alloc_(size_t alignment, size_t size) noexcept nogil
+    void  aligned_free_(void* ptr) noexcept nogil
 
 
 cdef extern from "<thread>" namespace "std" nogil:
@@ -102,6 +114,6 @@ cdef extern from *:
 
 cdef bint is_power_of_two(uint32_t n) noexcept nogil
 
-cdef inline int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except +
-cdef inline int str_to_cbuf(object msg, const char** data, size_t* size) except +
-cdef inline int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except +
+cdef int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except -1
+cdef int str_to_cbuf(object msg, const char** data, size_t* size) except -1
+cdef int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except -1

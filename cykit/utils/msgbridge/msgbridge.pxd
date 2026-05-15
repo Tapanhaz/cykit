@@ -6,11 +6,12 @@ cdef extern from *:
     """
     #ifdef _WIN32
         #include <winsock2.h>
-        #include <ws2_ipdef.h>
+        #include <ws2tcpip.h>
 
         #pragma comment(lib, "Ws2_32.lib")
 
         typedef SOCKET PLATFORM_SOCKET;
+
     #else
         #include <sys/socket.h>
         #include <netinet/in.h>
@@ -29,18 +30,21 @@ cdef extern from *:
     static inline void sig_notify(struct NotifyBridge* b) {
         if (b && b->sock != (PLATFORM_SOCKET)INVALID_SOCKET) {
             char signal = 1;
+
             sendto(
-                b->sock, 
-                &signal, 
-                1, 
-                0, 
-                (struct sockaddr*)&b->addr, sizeof(b->addr)
+                b->sock,
+                &signal,
+                1,
+                0,
+                (struct sockaddr*)&b->addr,
+                sizeof(b->addr)
             );
         }
     }
 
     static inline int sig_wait(struct NotifyBridge* b) {
         char buf;
+
         return recvfrom(
             b->sock,
             &buf,
@@ -51,7 +55,8 @@ cdef extern from *:
         );
     }
     """
-    ctypedef int PLATFORM_SOCKET  
+
+    ctypedef int PLATFORM_SOCKET
 
     cdef struct in_addr:
         uint32_t s_addr
@@ -59,20 +64,17 @@ cdef extern from *:
     cdef struct sockaddr_in:
         uint16_t sin_family
         uint16_t sin_port
-        in_addr sin_addr    
+        in_addr sin_addr
 
     cdef struct NotifyBridge:
         PLATFORM_SOCKET sock
         sockaddr_in addr
 
+    uint32_t inet_addr(const char*) nogil
+    uint16_t htons(uint16_t) nogil
+
     cdef void sig_notify(NotifyBridge* b) noexcept nogil
-    cdef void sig_wait(NotifyBridge* b) noexcept nogil
-
-
-
-cdef extern from "<arpa/inet.h>" nogil:
-    uint32_t inet_addr(const char*)
-    uint16_t htons(uint16_t)
+    cdef int sig_wait(NotifyBridge* b) noexcept nogil
 
 
 
@@ -119,8 +121,8 @@ cdef class AsyncDispatcher:
     cpdef void setup(self, str host=?)
     cdef void __try_push(self, const char* data, size_t size) noexcept nogil    
     cdef void __try_push_var(self, const char* data, size_t size) noexcept nogil
-    cdef inline bytes _try_pop(self) noexcept
-    cdef inline bytes _try_pop_var(self) noexcept
+    cdef inline bytes _try_pop(self)
+    cdef inline bytes _try_pop_var(self)
 
 
 cdef class SyncDispatcher:

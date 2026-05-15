@@ -8,7 +8,7 @@ cdef inline int buf_to_cbuf(
         Py_buffer* view,
         const char** data,
         size_t* size
-    ) except +:
+    ) except -1:
 
     if PyObject_GetBuffer(<PyObject*>msg, view, PyBUF_SIMPLE) != 0:
         return -1  
@@ -23,7 +23,7 @@ cdef inline int str_to_cbuf(
         object msg,
         const char** data,
         size_t* size
-    ) except +:
+    ) except -1:
     cdef Py_ssize_t n
 
     data[0] = <char*>PyUnicode_AsUTF8AndSize(<PyObject*>msg, &n)
@@ -39,7 +39,7 @@ cdef inline int obj_to_cbuf(
         PyObject** pb,
         const char** data,
         size_t* size
-    ) except +:
+    ) except -1:
 
     pb[0] = PyObject_Bytes(<PyObject*>msg)
     if pb[0] == NULL:

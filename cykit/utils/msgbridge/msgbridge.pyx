@@ -88,7 +88,7 @@ cdef class AsyncDispatcher:
             else:
                 await self._callback(msg)
 
-    cdef inline bytes _try_pop(self) noexcept:
+    cdef inline bytes _try_pop(self):
         cdef:
             char* buf
             size_t size 
@@ -97,7 +97,7 @@ cdef class AsyncDispatcher:
             return buf[:size]
         return None
 
-    cdef inline bytes _try_pop_var(self) noexcept:
+    cdef inline bytes _try_pop_var(self):
         cdef:
             char* buf
             size_t size 
