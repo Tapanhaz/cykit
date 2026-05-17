@@ -6,18 +6,17 @@ import multiprocessing
 from pathlib import Path
 from Cython.Build import cythonize
 from setuptools.command.build_ext import build_ext
-from setuptools import setup, Extension, find_packages
+from setuptools import setup, Extension, find_namespace_packages
 
-USE_SYS_BOOST = os.environ.get("USE_SYS_BOOST", "0").strip() not in (
-    "",
-    "0",
-    "false",
-    "False",
-    "no",
-)
+USE_SYS_BOOST = "USE_SYS_BOOST" in os.environ
 
 if USE_SYS_BOOST:
     print("===> USE_SYS_BOOST: Skipping Boost vendoring; using system Boost headers")
+
+FORCE_BOOST_DOWNLOAD = "FORCE_BOOST_DOWNLOAD" in os.environ
+
+if FORCE_BOOST_DOWNLOAD:
+    print("===> FORCE_BOOST_DOWNLOAD: Selected headers of boost will be downloaded")
 
 
 class BuildExt(build_ext):
@@ -50,12 +49,19 @@ class BuildExt(build_ext):
 
             if "build" in cmake_source_dir.parts:
                 continue
+            
+            if cmake_source_dir.name == "boost":
+                if USE_SYS_BOOST:
+                    print(
+                        f"===> USE_SYS_BOOST: skipping CMake build for {cmake_source_dir}"
+                    )
+                    continue
 
-            if USE_SYS_BOOST and cmake_source_dir.name == "boost":
-                print(
-                    f"===> USE_SYS_BOOST: skipping CMake build for {cmake_source_dir}"
-                )
-                continue
+                if not FORCE_BOOST_DOWNLOAD:
+                    boost_include = cmake_source_dir / "include"
+                    if boost_include.exists() and any(boost_include.iterdir()):
+                        print(f"===> Boost headers already present at {boost_include}, skipping download. Set FORCE_BOOST_DOWNLOAD to re-download.")
+                        continue
 
             self.build_cmake(cmake_source_dir)
 
@@ -294,6 +300,10 @@ def get_compile_flags():
             "-O3",
             "-DNDEBUG",
             "-Wall",
+            "-g0",
+            "-fvisibility=hidden",
+            "-ffunction-sections",
+            "-fdata-sections"
         ]
 
         if platform.system() == "Darwin":
@@ -302,13 +312,30 @@ def get_compile_flags():
 
 
 def get_link_flags():
-    if platform.system() == "Windows":
-        return ["/LTCG"]
+
+    system = platform.system()
+
+    if system == "Windows":
+        return [
+            "/LTCG",
+            "/OPT:REF",
+            "/OPT:ICF",
+        ]
+
+    flags = ["-Wl,-O1"]
+
+    if system == "Darwin":
+        flags.extend([
+            "-mmacosx-version-min=13.0",
+            "-Wl,-dead_strip",
+        ])
     else:
-        flags = ["-Wl,-O1"]
-        if platform.system() == "Darwin":
-            flags.append("-mmacosx-version-min=13.0")
-        return flags
+        flags.extend([
+            "-Wl,--gc-sections",
+            "-s",
+        ])
+
+    return flags
 
 
 common_macros = []
@@ -322,7 +349,17 @@ if platform.system() == "Windows":
         ]
     )
 
+include_dirs = []
+
+lib_dirs = []
+
 cylogger_lib_dir = "cykit/cylogger"
+
+lib_dirs.append(cylogger_lib_dir)
+
+cylogger_include_dir = f"{cylogger_lib_dir}/include"
+
+include_dirs.extend([cylogger_lib_dir, cylogger_include_dir])
 
 
 if USE_SYS_BOOST:
@@ -330,6 +367,7 @@ if USE_SYS_BOOST:
 else:
     boost_include_dir = "cykit/utils/boost/include"
 
+include_dirs.append(boost_include_dir)
 
 compile_flags = get_compile_flags()
 link_flags = get_link_flags()
@@ -343,9 +381,9 @@ extensions = [
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
         libraries=["cylogger"],
-        library_dirs=[cylogger_lib_dir],
+        library_dirs=lib_dirs,
         runtime_library_dirs=["$ORIGIN"] if platform.system() != "Windows" else None,
-        include_dirs=[cylogger_lib_dir, f"{cylogger_lib_dir}/include"],
+        include_dirs=include_dirs,
         define_macros=common_macros,
     ),
     Extension(
@@ -360,18 +398,24 @@ extensions = [
         sources=["cykit/utils/signal_handler/signal_handler.pyx"],
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
+        libraries=["cylogger"],
+        library_dirs=lib_dirs,
         language="c++",
-        include_dirs=[boost_include_dir],
+        include_dirs=include_dirs,
         define_macros=common_macros,
+        runtime_library_dirs=["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None,
     ),
     Extension(
         "cykit.spsc_queue.spsc_queue",
         sources=["cykit/spsc_queue/spsc_queue.pyx"],
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
+        libraries=["cylogger"],
+        library_dirs=lib_dirs,
         language="c++",
-        include_dirs=[boost_include_dir],
+        include_dirs=include_dirs,
         define_macros=common_macros,
+        runtime_library_dirs=["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None,
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
@@ -379,7 +423,7 @@ extensions = [
         extra_compile_args=compile_flags,
         extra_link_args=link_flags,
         language="c++",
-        include_dirs=[boost_include_dir],
+        include_dirs=include_dirs,
         define_macros=common_macros,
     ),
 ]
@@ -389,7 +433,7 @@ cython_directives = {
     "embedsignature": True,
 }
 
-if "CYKIT_OPTIMIZE" in __import__("os").environ:
+if "CYKIT_OPTIMIZE" in os.environ:
     print("===> Enabling Optimizations")
 
     if sys.platform.startswith("linux"):
@@ -416,7 +460,14 @@ if "CYKIT_OPTIMIZE" in __import__("os").environ:
 setup(
     name="cykit",
     version="0.0.7",
-    packages=find_packages(),
+    packages=find_namespace_packages(
+                            exclude=[
+                                "examples", 
+                                "examples.*", 
+                                "build", 
+                                "dist"
+                            ]
+                        ),
     ext_modules=cythonize(
         extensions,
         compiler_directives=cython_directives,

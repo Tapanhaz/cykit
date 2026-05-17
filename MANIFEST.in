@@ -6,8 +6,10 @@ include LICENSE-MIT
 
 include pyproject.toml
 
-recursive-include cykit *.pxd *.pyx *.py *.pyi *.cpp *.hpp *.h
+recursive-include cykit *.pxd *.pyx *.pyi *.cpp *.hpp *.h *.
 recursive-include cykit *.so *.so.* *.dylib *.pyd
+
+recursive-include cykit/utils/boost/include *
 
 include cykit/cylogger/CMakeLists.txt
 include cykit/utils/boost/CMakeLists.txt
@@ -15,3 +17,4 @@ include cykit/utils/boost/CMakeLists.txt
 graft cykit/cylogger
 
 prune cykit/cylogger/build
+prune cykit/utils/boost/build
