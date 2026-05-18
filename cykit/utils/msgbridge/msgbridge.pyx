@@ -441,3 +441,4 @@ cdef class AsyncQueue:
                 await self._task
             except asyncio.CancelledError:
                 pass
+                

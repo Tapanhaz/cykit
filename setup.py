@@ -49,7 +49,7 @@ class BuildExt(build_ext):
 
             if "build" in cmake_source_dir.parts:
                 continue
-            
+
             if cmake_source_dir.name == "boost":
                 if USE_SYS_BOOST:
                     print(
@@ -60,7 +60,9 @@ class BuildExt(build_ext):
                 if not FORCE_BOOST_DOWNLOAD:
                     boost_include = cmake_source_dir / "include"
                     if boost_include.exists() and any(boost_include.iterdir()):
-                        print(f"===> Boost headers already present at {boost_include}, skipping download. Set FORCE_BOOST_DOWNLOAD to re-download.")
+                        print(
+                            f"===> Boost headers already present at {boost_include}, skipping download. Set FORCE_BOOST_DOWNLOAD to re-download."
+                        )
                         continue
 
             self.build_cmake(cmake_source_dir)
@@ -303,7 +305,7 @@ def get_compile_flags():
             "-g0",
             "-fvisibility=hidden",
             "-ffunction-sections",
-            "-fdata-sections"
+            "-fdata-sections",
         ]
 
         if platform.system() == "Darwin":
@@ -325,15 +327,19 @@ def get_link_flags():
     flags = ["-Wl,-O1"]
 
     if system == "Darwin":
-        flags.extend([
-            "-mmacosx-version-min=13.0",
-            "-Wl,-dead_strip",
-        ])
+        flags.extend(
+            [
+                "-mmacosx-version-min=13.0",
+                "-Wl,-dead_strip",
+            ]
+        )
     else:
-        flags.extend([
-            "-Wl,--gc-sections",
-            "-s",
-        ])
+        flags.extend(
+            [
+                "-Wl,--gc-sections",
+                "-s",
+            ]
+        )
 
     return flags
 
@@ -403,7 +409,9 @@ extensions = [
         language="c++",
         include_dirs=include_dirs,
         define_macros=common_macros,
-        runtime_library_dirs=["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None,
+        runtime_library_dirs=(
+            ["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None
+        ),
     ),
     Extension(
         "cykit.spsc_queue.spsc_queue",
@@ -415,7 +423,9 @@ extensions = [
         language="c++",
         include_dirs=include_dirs,
         define_macros=common_macros,
-        runtime_library_dirs=["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None,
+        runtime_library_dirs=(
+            ["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None
+        ),
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
@@ -459,15 +469,10 @@ if "CYKIT_OPTIMIZE" in os.environ:
 
 setup(
     name="cykit",
-    version="0.0.7",
+    version="0.0.8",
     packages=find_namespace_packages(
-                            exclude=[
-                                "examples", 
-                                "examples.*", 
-                                "build", 
-                                "dist"
-                            ]
-                        ),
+        exclude=["examples", "examples.*", "build", "dist"]
+    ),
     ext_modules=cythonize(
         extensions,
         compiler_directives=cython_directives,
