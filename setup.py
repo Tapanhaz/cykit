@@ -480,5 +480,26 @@ setup(
     ),
     cmdclass={"build_ext": BuildExt},
     include_package_data=True,
+    package_data={
+        "cykit.cylogger": [
+            "*.pxd",
+            "*.pyi",
+            "*.hpp",
+            "*.so",
+            "*.so.*",
+            "*.dll",
+            "*.dylib",
+            "*.*.dylib",
+            "*.*.*.dylib",
+            "*.lib",
+            "cylogger.lib",
+            "libcylogger.so*",
+            "libcylogger.dylib*",
+            "libcylogger.0.dylib",
+            "cylogger.dll",
+            "include/**/*.h",
+            "include/**/*.hpp",
+        ]
+    },
     zip_safe=False,
 )
