@@ -58,6 +58,9 @@ cdef extern from *:
 
     ctypedef int PLATFORM_SOCKET
 
+    enum:
+        AF_INET
+
     cdef struct in_addr:
         uint32_t s_addr
 
@@ -70,7 +73,12 @@ cdef extern from *:
         PLATFORM_SOCKET sock
         sockaddr_in addr
 
-    uint32_t inet_addr(const char*) nogil
+    int inet_pton(
+        int af,
+        const char *src,
+        void *dst
+    ) nogil
+
     uint16_t htons(uint16_t) nogil
 
     cdef void sig_notify(NotifyBridge* b) noexcept nogil

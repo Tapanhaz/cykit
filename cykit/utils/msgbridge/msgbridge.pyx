@@ -60,15 +60,23 @@ cdef class AsyncDispatcher:
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         sock.setblocking(False)
         sock.bind((host, 0))
+
         self._sock = sock
 
         ip, port = sock.getsockname()
-        self._bridge.addr.sin_family      = 2
-        self._bridge.addr.sin_port        = htons(port)
-        self._bridge.addr.sin_addr.s_addr = inet_addr(ip.encode())
-        self._bridge.sock                 = sock.fileno()
 
-        self._task  = loop.create_task(self._reader(loop, sock))
+        self._bridge.addr.sin_family = AF_INET
+        self._bridge.addr.sin_port   = htons(port)
+
+        inet_pton(
+            AF_INET,
+            ip.encode(),
+            &self._bridge.addr.sin_addr
+        )
+
+        self._bridge.sock = sock.fileno()
+
+        self._task = loop.create_task(self._reader(loop, sock))
 
     cdef void __try_push(self, const char* data, size_t size) noexcept nogil:
         if self._q.try_push(data, size) > 0:
@@ -164,16 +172,26 @@ cdef class SyncDispatcher:
         import socket as _socket
         import threading
 
+        loop = asyncio.get_running_loop()
+
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        sock.setblocking(True)
+        sock.setblocking(False)
         sock.bind((host, 0))
+
         self._sock = sock
 
         ip, port = sock.getsockname()
-        self._bridge.addr.sin_family      = 2
-        self._bridge.addr.sin_port        = htons(port)
-        self._bridge.addr.sin_addr.s_addr = inet_addr(ip.encode())
-        self._bridge.sock                 = sock.fileno()
+
+        self._bridge.addr.sin_family = AF_INET
+        self._bridge.addr.sin_port   = htons(port)
+
+        inet_pton(
+            AF_INET,
+            ip.encode(),
+            &self._bridge.addr.sin_addr
+        )
+
+        self._bridge.sock = sock.fileno()
 
         if self._variable_size:
             threading.Thread(target= self._try_pop_var, daemon= self._daemon).start()
@@ -441,4 +459,3 @@ cdef class AsyncQueue:
                 await self._task
             except asyncio.CancelledError:
                 pass
-                
