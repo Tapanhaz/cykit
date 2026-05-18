@@ -21,8 +21,6 @@ from cykit.utils.signal_handler cimport (
     cleanup_signal_handler
 )
 
-from cykit.utils.compat cimport usleep_
-
 
 
 cdef void spsc_queue_notify(void* ctx) noexcept nogil:
@@ -601,8 +599,5 @@ cdef class SPSCQueue:
     
     def __dealloc__(self):
         self.close()
-        usleep_(2000)
-
         unregister_context_notify(<void*>&self._q)
-        usleep_(2000)
         cleanup_signal_handler()
