@@ -8,6 +8,7 @@ cdef extern from *:
     #include <vector>
     #include <mutex>
     #include <Python.h>
+    #include <spdlog_logger.hpp>
     
     typedef void (*context_notify_fn)(void* ctx);
     
@@ -22,6 +23,7 @@ cdef extern from *:
     static std::atomic<int> g_signal_received{0};
     static boost::asio::io_context* g_io_context = nullptr;
     static std::thread* g_signal_thread = nullptr;
+    static std::atomic<int> g_handler_refcount{0};
 
     #ifdef _WIN32
     static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
@@ -50,12 +52,12 @@ cdef extern from *:
         
         void handle_signal(const boost::system::error_code& error, int signal_number) {
             if (!error) {
-                printf("[SIGNAL] Received signal %d\\n", signal_number);
+                INFO("[SIGNAL] Received signal %d\\n", signal_number);
                 g_signal_received.store(1, std::memory_order_release);
                 
                 {
                     std::lock_guard<std::mutex> lock(g_registry_mutex);
-                    printf("[SIGNAL] Stopping %zu contexts...\\n", g_registered_contexts.size());
+                    INFO("[SIGNAL] Stopping %zu contexts...\\n", g_registered_contexts.size());
                     
                     for (size_t i = 0; i < g_registered_contexts.size(); i++) {
                         auto& ctx = g_registered_contexts[i];
@@ -70,7 +72,7 @@ cdef extern from *:
                     }
                 }
                 
-                printf("[SIGNAL] All contexts notified\\n");
+                INFO("[SIGNAL] All contexts notified\\n");
                 
                 io.stop();
                 
@@ -100,37 +102,44 @@ cdef extern from *:
     };
     
     inline int init_signal_handler() {
-        static std::atomic<int> initialized{0};
-        
-        int expected = 0;
-        if (!initialized.compare_exchange_strong(expected, 1, 
-                                                 std::memory_order_acq_rel)) {
-            return 0;
-        }
-        
-        try {
-            g_io_context = new boost::asio::io_context();
-            
-            auto* handler = new SignalHandler(*g_io_context);
+        g_handler_refcount.fetch_add(1, std::memory_order_relaxed);
 
-            #ifdef _WIN32
-            SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
-            #endif
-            
-            g_signal_thread = new std::thread([handler]() {
-                g_io_context->run();
-                delete handler;
-            });
-            
-            g_signal_thread->detach();
-            
-            printf("[SIGNAL] Handler initialized\\n");
-            return 0;
-            
-        } catch (...) {
-            initialized.store(0, std::memory_order_release);
-            return -1;
-        }
+        static std::once_flag g_init_once;
+        static bool           g_init_ok = false;
+
+        std::call_once(g_init_once, []() {
+            try {
+                g_io_context = new boost::asio::io_context();
+
+                using work_guard_t = boost::asio::executor_work_guard
+                    <boost::asio::io_context::executor_type>;
+                auto* work = new work_guard_t(
+                    boost::asio::make_work_guard(*g_io_context));
+
+                auto* handler = new SignalHandler(*g_io_context);
+
+                #ifdef _WIN32
+                SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+                #endif
+
+                g_signal_thread = new std::thread([handler, work]() {
+                    g_io_context->run();
+                    delete work;
+                    delete handler;
+                });
+
+                g_signal_thread->detach();
+
+                delete g_signal_thread;
+                g_signal_thread = nullptr;
+
+                INFO("[SIGNAL] Handler initialized\\n");
+                g_init_ok = true;
+
+            } catch (...) {}
+        });
+
+        return g_init_ok ? 0 : -1;
     }
     
     
@@ -148,7 +157,7 @@ cdef extern from *:
         
         g_registered_contexts.push_back(ctx);
         
-        printf("[SIGNAL] Registered context %p (total: %zu)\\n", 
+        INFO("[SIGNAL] Registered context %p (total: %zu)\\n", 
                context_ptr, g_registered_contexts.size());
     }
     
@@ -160,7 +169,7 @@ cdef extern from *:
         while (it != g_registered_contexts.end()) {
             if (it->context_ptr == context_ptr) {
                 g_registered_contexts.erase(it);
-                printf("[SIGNAL] Unregistered context %p (remaining: %zu)\\n",
+                INFO("[SIGNAL] Unregistered context %p (remaining: %zu)\\n",
                        context_ptr, g_registered_contexts.size());
                 return;
             }
@@ -169,22 +178,15 @@ cdef extern from *:
     }
     
     inline void cleanup_signal_handler() {
-        #ifdef _WIN32
-        SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
-        #endif
+        int prev = g_handler_refcount.fetch_sub(1, std::memory_order_acq_rel);
+        if (prev <= 1) {
+
+            #ifdef _WIN32
+            SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
+            #endif
         
-        if (g_io_context) {
-            g_io_context->stop();
-        }
-        
-        {
             std::lock_guard<std::mutex> lock(g_registry_mutex);
             g_registered_contexts.clear();
-        }
-        
-        if (g_io_context) {
-            delete g_io_context;
-            g_io_context = nullptr;
         }
     }
     """
