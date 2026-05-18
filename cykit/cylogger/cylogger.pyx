@@ -304,8 +304,10 @@ cdef SpdLogger get_logger_by_name(const char* name):
     cdef SpdLogger logger = SpdLogger(logger_ptr)
     return logger    
 
-cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= "", bint fallback_to_default= False):
-    logger = registry_get_logger_ptr(name, fallback_to_default)
+#cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= "", bint fallback_to_default= False):
+#    logger = registry_get_logger_ptr(name, fallback_to_default)
+cdef shared_ptr[logger] get_logger_ptr(str name="", bint fallback_to_default=False):
+    return registry_get_logger_ptr(name, fallback_to_default)
 
 cdef void get_logger(SpdLogger &log, str name= "", bint fallback_to_default= False):
     cdef shared_ptr[logger] logger_ptr = registry_get_logger_ptr(name.encode(), fallback_to_default)

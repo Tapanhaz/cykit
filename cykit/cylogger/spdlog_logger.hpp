@@ -24,6 +24,12 @@
     #include <frameobject.h>
 #endif
 
+#ifdef _WIN32
+    #ifdef ERROR
+        #undef ERROR
+    #endif
+#endif
+
 namespace spdlog_internal {
 
     class MaxSinkLevel : public spdlog::sinks::sink {

@@ -292,6 +292,7 @@ cdef class DefaultLogger:
     cpdef void critical(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
 
 cdef SpdLogger get_logger_by_name(const char* name)
-cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= *, bint fallback_to_default= *)
+#cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= *, bint fallback_to_default= *)
+cdef shared_ptr[logger]& get_logger_ptr(str name= *, bint fallback_to_default= *)
 cdef void get_logger(SpdLogger &log, str name= *, bint fallback_to_default= *)
 
