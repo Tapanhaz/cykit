@@ -35,8 +35,25 @@ cdef void spsc_queue_notify(void* ctx) noexcept nogil:
 
 
 cdef class SPSCQueue:
+
+    def __cinit__(self):
+
+        self._q.head.store(0, memory_order_relaxed)
+        self._q.tail.store(0, memory_order_relaxed)
+
+        self._q.seq_counter    = 0
+        self._q.expected_seq   = 0
+        self._q.expected_chunk = 0
+        self._q.assemble_buf   = NULL
+        self._q.assemble_used  = 0
+        self._q.assemble_cap   = 0
+
+        self._q.slots     = NULL
+        self._q.slot_bufs = NULL
+
+        self._q.running.store(1, memory_order_relaxed)
     
-    def __cinit__(
+    def __init__(
             self,
             size_t slot_size,
             size_t capacity,
@@ -52,19 +69,9 @@ cdef class SPSCQueue:
                             (F_BLOCK_ON_FULL if block_on_full else 0)
                         )
 
-        self._q.head.store(0, memory_order_relaxed)
-        self._q.tail.store(0, memory_order_relaxed)
+        
         self._q.capacity_mask = capacity - 1
-        self._q.slot_size     = slot_size
-
-        self._q.seq_counter    = 0
-        self._q.expected_seq   = 0
-        self._q.expected_chunk = 0
-        self._q.assemble_buf   = NULL
-        self._q.assemble_used  = 0
-        self._q.assemble_cap   = 0
-
-        self._q.running.store(1, memory_order_relaxed)
+        self._q.slot_size     = slot_size       
 
         self._q.slots = <SPSCSlot*>aligned_alloc_(64, capacity * sizeof(SPSCSlot))
         self._q.slot_bufs = <char*>aligned_alloc_(64, capacity * slot_size)
@@ -109,6 +116,8 @@ cdef class SPSCQueue:
                 elif self._q.flags & F_BLOCK_ON_FULL:
                     if not self._q.running.load(memory_order_acquire):
                         return SPSC_ERR
+
+                    atomic_notify_one(&self._q.tail)
 
                     atomic_wait(&self._q.head, head)
 
@@ -227,6 +236,10 @@ cdef class SPSCQueue:
                         continue
 
                     elif self._q.flags & F_BLOCK_ON_FULL:
+                        if not self._q.running.load(memory_order_acquire):
+                            return SPSC_ERR
+
+                        atomic_notify_one(&self._q.tail)
                         atomic_wait(&self._q.head, head)
 
                         if not self._q.running.load(memory_order_acquire):
@@ -581,10 +594,15 @@ cdef class SPSCQueue:
         
 
     cdef void close(self) noexcept nogil:
-        self._q.running.store(0, memory_order_relaxed)
+        self._q.running.store(0, memory_order_release)
 
         atomic_notify_one(&self._q.tail)
         atomic_notify_one(&self._q.head)
+    
+    def __dealloc__(self):
+        self.close()
+        unregister_context_notify(<void*>&self._q)
+        cleanup_signal_handler()
 
         if self._q.slot_bufs != NULL:
             aligned_free_(self._q.slot_bufs) 
@@ -595,9 +613,3 @@ cdef class SPSCQueue:
         if self._q.assemble_buf != NULL:
             free(self._q.assemble_buf)
             self._q.assemble_buf = NULL
-
-    
-    def __dealloc__(self):
-        self.close()
-        unregister_context_notify(<void*>&self._q)
-        cleanup_signal_handler()
