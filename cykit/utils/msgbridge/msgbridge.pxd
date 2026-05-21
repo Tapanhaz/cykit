@@ -156,6 +156,41 @@ cdef class SyncDispatcher:
 
 
 
+ctypedef int (*cc_push_fn_t) (
+    CyPipe,
+    const char* data,
+    size_t size
+) noexcept nogil
+
+ctypedef int (*cc_pop_fn_t) (
+    CyPipe,
+    char** data,
+    size_t* size
+) noexcept nogil
+
+ctypedef int (*cc_commit_fn_t) (
+    CyPipe
+) noexcept nogil
+
+
+cdef class CyPipe:
+    cdef:
+        SPSCQueue _q 
+
+        cc_push_fn_t   push
+        cc_pop_fn_t    pop
+        cc_commit_fn_t commit
+    
+    cdef inline int __push(self, const char* data, size_t size) noexcept nogil
+    cdef inline int __push_var(self, const char* data, size_t size) noexcept nogil
+    cdef inline int __pop(self, char** data, size_t* size) noexcept nogil
+    cdef inline int __pop_var(self, char** data, size_t* size) noexcept nogil
+    cdef inline void _pop_commit(self) noexcept nogil
+    cdef inline void _noop_commit(self) noexcept nogil
+
+
+
+
 
 cdef enum MsgKind:
     MSG_BYTES  = 0
@@ -163,7 +198,6 @@ cdef enum MsgKind:
     MSG_BUF    = 2
     MSG_OBJ    = 3
     MSG_MIXED  = 4
-
 
 ctypedef int (*cb_load_fn_t)(CBufferView, object) except -1
 
@@ -189,6 +223,7 @@ cdef class CBufferView:
     cdef inline int _load_str(self, object msg) except -1
     cdef inline int _load_obj(self, object msg) except -1
     cdef inline int _load(self, object msg) except -1
+
 
 
 ## Only for testing purpose ::

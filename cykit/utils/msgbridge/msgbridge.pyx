@@ -416,6 +416,62 @@ cdef class SyncDispatcher:
 # endregion
 
 
+# region CyDispatcher (cython -> cython)
+
+
+cdef class CyPipe:
+
+    def __cinit__(self):
+        self._q  = None
+
+    def __init__(
+            self,
+            size_t capacity    = 16384,
+            size_t slot_size   = 2048,
+            bint zerocopy      = False,
+            bint overwrite     = False,
+            bint block_on_full = False,
+            bint variable_size = False
+        ):
+    
+        self._q = SPSCQueue(
+                        slot_size= slot_size,
+                        capacity= capacity,
+                        overwrite= overwrite,
+                        zerocopy= zerocopy,
+                        block_on_full= block_on_full
+                        )
+
+        if variable_size:
+            self.push = <cc_push_fn_t>self.__push_var
+            self.pop = <cc_pop_fn_t>self.__pop_var
+            self.commit = <cc_commit_fn_t>self._noop_commit
+        else:
+            self.push = <cc_push_fn_t>self.__push
+            self.pop = <cc_pop_fn_t>self.__pop
+            self.commit = <cc_commit_fn_t>self._pop_commit
+    
+    cdef inline int __push(self, const char* data, size_t size) noexcept nogil:
+        return self._q.push(data, size)
+
+    cdef inline int __push_var(self, const char* data, size_t size) noexcept nogil:
+        return self._q.push_var(data, size)
+    
+    cdef inline int __pop(self, char** data, size_t* size) noexcept nogil:
+        return self._q.pop_borrow(data, size)
+
+    cdef inline int __pop_var(self, char** data, size_t* size) noexcept nogil:
+        return self._q.pop_var(data, size)
+    
+    cdef inline void _pop_commit(self) noexcept nogil:
+        self._q.pop_commit()
+
+    cdef inline void _noop_commit(self) noexcept nogil:
+        pass
+    
+
+# endregion
+
 
 # region CBuffer
 
