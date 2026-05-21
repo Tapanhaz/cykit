@@ -11,27 +11,48 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 find_package(Python3 REQUIRED COMPONENTS Development.Module)
 
-include(FetchContent)
+set(SPDLOG_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/spdlog")
 
-FetchContent_Declare(
-    spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.16.0
-)
+if(EXISTS "${SPDLOG_INCLUDE_DIR}" AND (NOT "${SPDLOG_INCLUDE_DIR}" STREQUAL ""))
+    file(GLOB SPDLOG_HEADERS "${SPDLOG_INCLUDE_DIR}/*.h")
+    if(SPDLOG_HEADERS)
+        message(STATUS "Using existing spdlog headers from ${SPDLOG_INCLUDE_DIR}")
+        add_library(spdlog::spdlog INTERFACE IMPORTED)
+        target_include_directories(spdlog::spdlog INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        set(SPDLOG_FOUND YES)
+    endif()
+endif()
 
-set(SPDLOG_HEADER_ONLY OFF CACHE BOOL "" FORCE)
-set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(spdlog) 
+if(NOT SPDLOG_FOUND)
+    message(STATUS "Fetching spdlog via CMake ...")
+    include(FetchContent)
 
-add_custom_target(cylogger_vendor_headers ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${spdlog_SOURCE_DIR}/include/spdlog
-            ${CMAKE_CURRENT_SOURCE_DIR}/include/spdlog
-)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.16.0
+    )
 
+    set(SPDLOG_HEADER_ONLY OFF CACHE BOOL "" FORCE)
+    set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(spdlog) 
+endif()
+
+if(NOT SPDLOG_FOUND)
+    add_custom_target(cylogger_vendor_headers ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${spdlog_SOURCE_DIR}/include/spdlog
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/spdlog
+    )
+else()
+    add_custom_target(cylogger_vendor_headers ALL
+        COMMENT "Vendored headers already present, skipping copy"
+    )
+endif()
 
 
 if(MSVC)
