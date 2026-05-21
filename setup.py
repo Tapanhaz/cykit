@@ -8,12 +8,20 @@ from Cython.Build import cythonize
 from setuptools.command.build_ext import build_ext
 from setuptools import setup, Extension, find_namespace_packages
 
-USE_SYS_BOOST = "USE_SYS_BOOST" in os.environ
+sys.path.insert(0, str(Path(__file__).parent))
 
-if USE_SYS_BOOST:
+from cykit.build_config import config
+
+if config.use_sys_boost:
     print("===> USE_SYS_BOOST: Skipping Boost vendoring; using system Boost headers")
 
-FORCE_BOOST_DOWNLOAD = "FORCE_BOOST_DOWNLOAD" in os.environ
+if config.debug:
+    print("===> DEBUG Mode is enabled")
+
+if config.ext_debug:
+    print("===> EXTENDED DEBUG (ASAN/UBSAN) Mode is enabled")
+
+FORCE_BOOST_DOWNLOAD = config.get_env_flag("FORCE_BOOST_DOWNLOAD")
 
 if FORCE_BOOST_DOWNLOAD:
     print("===> FORCE_BOOST_DOWNLOAD: Selected headers of boost will be downloaded")
@@ -25,6 +33,29 @@ class BuildExt(build_ext):
         self.build_all_cmake_subprojects()
         self.add_cmake_deps_to_extensions()
         super().run()
+
+    def build_extension(self, ext):
+        system = platform.system()
+        if system != "Windows" and ext.library_dirs:
+            ext_pkg_dir = Path(*ext.name.split(".")[:-1])
+            seen = {"."}
+            if system == "Darwin":
+                ext.extra_link_args.append("-Wl,-rpath,@loader_path/")
+            else:
+                ext.extra_link_args.append("-Wl,-rpath,$ORIGIN")
+            for lib_dir in ext.library_dirs:
+                lib_pkg_dir = Path(lib_dir)
+                rel = os.path.relpath(lib_pkg_dir, ext_pkg_dir)
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                if system == "Darwin":
+                    rpath = f"@loader_path/{rel}"
+                else:
+                    rpath = f"$ORIGIN/{rel}"
+                ext.extra_link_args.append(f"-Wl,-rpath,{rpath}")
+                print(f"Injecting rpath {rpath} → {ext.name}")
+        super().build_extension(ext)
 
     def add_cmake_deps_to_extensions(self):
         for ext in self.extensions:
@@ -51,7 +82,7 @@ class BuildExt(build_ext):
                 continue
 
             if cmake_source_dir.name == "boost":
-                if USE_SYS_BOOST:
+                if config.use_sys_boost:
                     print(
                         f"===> USE_SYS_BOOST: skipping CMake build for {cmake_source_dir}"
                     )
@@ -81,7 +112,11 @@ class BuildExt(build_ext):
         cmake_args = [
             "cmake",
             str(cmake_source_dir),
-            "-DCMAKE_BUILD_TYPE=Release",
+            (
+                "-DCMAKE_BUILD_TYPE=Debug"
+                if config.ext_debug
+                else "-DCMAKE_BUILD_TYPE=Release"
+            ),
         ]
 
         if platform.system() == "Windows":
@@ -285,187 +320,33 @@ class BuildExt(build_ext):
             print(f"Vendored headers from {dep_dir.name} to {package_include_dst}")
 
 
-def get_compile_flags():
-    if platform.system() == "Windows":
-        return [
-            "/utf-8",
-            "/std:c++latest",
-            "/O2",
-            "/GL",
-            "/arch:AVX2",
-            "/DNDEBUG",
-            "/W3",
-        ]
-    else:
-        flags = [
-            "-std=c++20",
-            "-O3",
-            "-DNDEBUG",
-            "-Wall",
-            "-g0",
-            "-fvisibility=hidden",
-            "-ffunction-sections",
-            "-fdata-sections",
-        ]
-
-        if platform.system() == "Darwin":
-            flags.append("-mmacosx-version-min=13.0")
-        return flags
-
-
-def get_link_flags():
-
-    system = platform.system()
-
-    if system == "Windows":
-        return [
-            "/LTCG",
-            "/OPT:REF",
-            "/OPT:ICF",
-        ]
-
-    flags = ["-Wl,-O1"]
-
-    if system == "Darwin":
-        flags.extend(
-            [
-                "-mmacosx-version-min=13.0",
-                "-Wl,-dead_strip",
-            ]
-        )
-    else:
-        flags.extend(
-            [
-                "-Wl,--gc-sections",
-                "-s",
-            ]
-        )
-
-    return flags
-
-
-common_macros = []
-
-if platform.system() == "Windows":
-    common_macros.extend(
-        [
-            ("_WIN32_WINNT", "0x0A00"),
-            ("WIN32_LEAN_AND_MEAN", None),
-            ("NOMINMAX", None),
-        ]
-    )
-
-include_dirs = []
-
-lib_dirs = []
-
-cylogger_lib_dir = "cykit/cylogger"
-
-lib_dirs.append(cylogger_lib_dir)
-
-cylogger_include_dir = f"{cylogger_lib_dir}/include"
-
-include_dirs.extend([cylogger_lib_dir, cylogger_include_dir])
-
-
-if USE_SYS_BOOST:
-    boost_include_dir = ""
-else:
-    boost_include_dir = "cykit/utils/boost/include"
-
-include_dirs.append(boost_include_dir)
-
-compile_flags = get_compile_flags()
-link_flags = get_link_flags()
-
+base_ext_kwargs = config.get_base_ext_kwargs()
+cylogger_ext_kwargs = config.get_extension_kwargs()
 
 extensions = [
     Extension(
         "cykit.cylogger.cylogger",
         sources=["cykit/cylogger/cylogger.pyx"],
-        language="c++",
-        extra_compile_args=compile_flags,
-        extra_link_args=link_flags,
-        libraries=["cylogger"],
-        library_dirs=lib_dirs,
-        runtime_library_dirs=["$ORIGIN"] if platform.system() != "Windows" else None,
-        include_dirs=include_dirs,
-        define_macros=common_macros,
+        **cylogger_ext_kwargs,
     ),
-    Extension(
-        "cykit.common",
-        sources=["cykit/common.pyx"],
-        extra_compile_args=compile_flags,
-        extra_link_args=link_flags,
-        language="c++",
-    ),
+    Extension("cykit.common", sources=["cykit/common.pyx"], **base_ext_kwargs),
     Extension(
         "cykit.utils.signal_handler.signal_handler",
         sources=["cykit/utils/signal_handler/signal_handler.pyx"],
-        extra_compile_args=compile_flags,
-        extra_link_args=link_flags,
-        libraries=["cylogger"],
-        library_dirs=lib_dirs,
-        language="c++",
-        include_dirs=include_dirs,
-        define_macros=common_macros,
-        runtime_library_dirs=(
-            ["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None
-        ),
+        **cylogger_ext_kwargs,
     ),
     Extension(
         "cykit.spsc_queue.spsc_queue",
         sources=["cykit/spsc_queue/spsc_queue.pyx"],
-        extra_compile_args=compile_flags,
-        extra_link_args=link_flags,
-        libraries=["cylogger"],
-        library_dirs=lib_dirs,
-        language="c++",
-        include_dirs=include_dirs,
-        define_macros=common_macros,
-        runtime_library_dirs=(
-            ["$ORIGIN/../cylogger"] if platform.system() != "Windows" else None
-        ),
+        **cylogger_ext_kwargs,
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
         sources=["cykit/utils/msgbridge/msgbridge.pyx"],
-        extra_compile_args=compile_flags,
-        extra_link_args=link_flags,
-        language="c++",
-        include_dirs=include_dirs,
-        define_macros=common_macros,
+        **base_ext_kwargs,
     ),
 ]
 
-cython_directives = {
-    "language_level": "3",
-    "embedsignature": True,
-}
-
-if "CYKIT_OPTIMIZE" in os.environ:
-    print("===> Enabling Optimizations")
-
-    if sys.platform.startswith("linux"):
-        compile_flags.extend(
-            [
-                "-march=native",
-                "-mtune=native",
-                "-flto",
-                "-funroll-loops",
-            ]
-        )
-        link_flags.append("-flto")
-
-    cython_directives.update(
-        {
-            "boundscheck": False,
-            "wraparound": False,
-            "cdivision": True,
-            "initializedcheck": False,
-            "nonecheck": False,
-        }
-    )
 
 setup(
     name="cykit",
@@ -475,31 +356,10 @@ setup(
     ),
     ext_modules=cythonize(
         extensions,
-        compiler_directives=cython_directives,
+        compiler_directives=config.get_compiler_directives(),
         nthreads=multiprocessing.cpu_count(),
     ),
     cmdclass={"build_ext": BuildExt},
     include_package_data=True,
-    package_data={
-        "cykit.cylogger": [
-            "*.pxd",
-            "*.pyi",
-            "*.hpp",
-            "*.so",
-            "*.so.*",
-            "*.dll",
-            "*.dylib",
-            "*.*.dylib",
-            "*.*.*.dylib",
-            "*.lib",
-            "cylogger.lib",
-            "libcylogger.so*",
-            "libcylogger.dylib*",
-            "libcylogger.0.dylib",
-            "cylogger.dll",
-            "include/**/*.h",
-            "include/**/*.hpp",
-        ]
-    },
     zip_safe=False,
 )
