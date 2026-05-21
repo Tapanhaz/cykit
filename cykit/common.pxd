@@ -2,6 +2,7 @@
 from libc.stdint cimport uint32_t, uint64_t
 from cpython.ref cimport PyObject
 from libcpp.atomic cimport atomic
+from libcpp cimport bool as cbool
 
 cdef extern from "Python.h":
     void Py_INCREF(PyObject*)
@@ -60,6 +61,12 @@ cdef extern from "<atomic>" namespace "std" nogil:
         memory_order_acquire
         memory_order_release
         memory_order_seq_cst
+    
+    cdef cppclass atomic_bool "std::atomic<bool>":
+        atomic_bool() noexcept nogil
+        atomic_bool(cbool) noexcept nogil
+        cbool load(int) noexcept nogil
+        void store(cbool, int) noexcept nogil
     
     cdef cppclass atomic_uint64_t "std::atomic<uint64_t>":
         atomic_uint64_t() nogil
