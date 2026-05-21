@@ -115,7 +115,7 @@ class BuildConfig:
                 flags.append("-O3")
 
                 if self.optimize:
-                    if system == "linux":
+                    if system == "Linux":
                         flags.extend(
                             [
                                 "-march=native",
