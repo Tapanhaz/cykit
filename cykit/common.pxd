@@ -45,6 +45,7 @@ cdef extern from "Python.h":
     PyObject* PyLong_FromLong(long v) 
 
     int PyObject_GetBuffer(PyObject*, Py_buffer*, int)
+    int PyObject_CheckBuffer(PyObject*)
     void PyBuffer_Release(Py_buffer*)
     const char* PyUnicode_AsUTF8AndSize(PyObject*, Py_ssize_t*)
     int PyBytes_AsStringAndSize(PyObject*, char**, Py_ssize_t*)
@@ -120,7 +121,3 @@ cdef extern from *:
 
 
 cdef bint is_power_of_two(uint32_t n) noexcept nogil
-
-cdef int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except -1
-cdef int str_to_cbuf(object msg, const char** data, size_t* size) except -1
-cdef int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except -1

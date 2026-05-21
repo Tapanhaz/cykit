@@ -1,11 +1,15 @@
 from cykit.spsc_queue cimport SPSC_OK
 from cykit.common cimport (
     make_thread, 
-    buf_to_cbuf, 
-    str_to_cbuf, 
-    obj_to_cbuf,
     Py_buffer,
+    PyBUF_SIMPLE,
     PyBuffer_Release,
+    PyObject_GetBuffer,
+    PyUnicode_AsUTF8AndSize,
+    PyObject_Bytes,
+    PyBytes_AS_STRING,
+    PyBytes_GET_SIZE,
+    PyObject_CheckBuffer,
     PyObject,
     Py_INCREF,
     Py_DECREF,
@@ -21,8 +25,6 @@ import asyncio
 import sys
 
 logger = DefaultLogger()
-
-
 
 
 cpdef object setup_socket(bint blocking, int recvbuf):
@@ -415,7 +417,137 @@ cdef class SyncDispatcher:
 
 
 
+# region CBuffer
+
+cdef inline int buf_to_cbuf(
+        object msg,
+        Py_buffer* view,
+        const char** data,
+        size_t* size
+    ) except -1:
+
+    if PyObject_GetBuffer(<PyObject*>msg, view, PyBUF_SIMPLE) != 0:
+        return -1  
+
+    data[0] = <char*>view.buf
+    size[0] = <size_t>view.len
+
+    return 0
+
+
+cdef inline int str_to_cbuf(
+        object msg,
+        const char** data,
+        size_t* size
+    ) except -1:
+    cdef Py_ssize_t n
+
+    data[0] = <char*>PyUnicode_AsUTF8AndSize(<PyObject*>msg, &n)
+    if data[0] == NULL:
+        return -1
+
+    size[0] = <size_t>n
+    return 0
+
+
+cdef inline int obj_to_cbuf(
+        object msg,
+        PyObject** pb,
+        const char** data,
+        size_t* size
+    ) except -1:
+
+    pb[0] = PyObject_Bytes(<PyObject*>msg)
+    if pb[0] == NULL:
+        return -1
+
+    data[0] = PyBytes_AS_STRING(pb[0])
+    size[0] = PyBytes_GET_SIZE(pb[0])
+
+    return 0
+
+cdef inline int bytes_to_cbuf(
+        object msg,
+        const char** data,
+        size_t* size    
+    ) except -1:
+    
+    data[0] = <const char*>PyBytes_AS_STRING(<PyObject*>msg)
+    size[0] = <size_t>PyBytes_GET_SIZE(<PyObject*>msg)
+    return 0
+
+
+
+
+cdef class CBufferView:    
+    
+    def __cinit__(self):
+        self._data = NULL
+        self._size = 0
+        self._pb = NULL
+        self._view.buf = NULL
+    
+    def __init__(self, int msg_kind=4) -> None:
+        
+        self._kind = msg_kind
+
+        if self._kind == MsgKind.MSG_BYTES:
+            self.load = <cb_load_fn_t>self._load_bytes
+        elif self._kind == MsgKind.MSG_BUF:
+            self.load = <cb_load_fn_t>self._load_buf
+        elif self._kind == MsgKind.MSG_STR:
+            self.load = <cb_load_fn_t>self._load_str
+        elif self._kind == MsgKind.MSG_OBJ:
+            self.load = <cb_load_fn_t>self._load_obj 
+        else:
+            self.load = <cb_load_fn_t>self._load    
+    
+    cdef inline int _load_bytes(self, object msg) except -1:
+        return bytes_to_cbuf(msg, &self._data, &self._size)
+    
+    cdef inline int _load_buf(self, object msg) except -1:
+        if self._view.buf != NULL:
+            PyBuffer_Release(&self._view)
+
+        return buf_to_cbuf(msg, &self._view, &self._data, &self._size)
+
+    cdef inline int _load_str(self, object msg) except -1:
+        return str_to_cbuf(msg, &self._data, &self._size)
+    
+    cdef inline int _load_obj(self, object msg) except -1:
+        if self._pb != NULL:
+            Py_DECREF(self._pb)
+            self._pb = NULL
+
+        return obj_to_cbuf(msg, &self._pb, &self._data, &self._size)
+
+    cdef inline int _load(self, object msg) except -1:
+        if isinstance(msg, bytes):
+            return self._load_bytes(msg)
+        elif isinstance(msg, str):
+            return self._load_str(msg)
+        elif PyObject_CheckBuffer(<PyObject*>msg):
+            return self._load_buf(msg)
+        else:
+            return self._load_obj(msg)
+
+    def __dealloc__(self):
+        if self._view.buf != NULL:
+            PyBuffer_Release(&self._view)
+        if self._pb != NULL:
+            Py_DECREF(self._pb)
+            self._pb = NULL
+
+# endregion
+
+
+
+
 ## Only for testing purpose ::
+## TODO :: Implement CBufferView and add support for varible size msgs
+
+
+# region Async Queue
 
 cdef class AsyncQueue:        
     def __init__(
@@ -536,3 +668,5 @@ cdef class AsyncQueue:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+# endregion

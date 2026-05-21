@@ -1,6 +1,6 @@
 from libc.stdint  cimport uint32_t, uint16_t
 from cykit.spsc_queue cimport SPSCQueue
-from cykit.common cimport thread, atomic_bool
+from cykit.common cimport thread, atomic_bool, PyObject
 
 cdef extern from *:
     """
@@ -152,6 +152,43 @@ cdef class SyncDispatcher:
     
     cpdef void close(self)
 
+
+
+
+
+
+cdef enum MsgKind:
+    MSG_BYTES  = 0
+    MSG_STR    = 1
+    MSG_BUF    = 2
+    MSG_OBJ    = 3
+    MSG_MIXED  = 4
+
+
+ctypedef int (*cb_load_fn_t)(CBufferView, object) except -1
+
+cdef int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except -1
+cdef int str_to_cbuf(object msg, const char** data, size_t* size) except -1
+cdef int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except -1
+cdef int bytes_to_cbuf(object msg, const char** data, size_t* size) except -1
+
+
+cdef class CBufferView:
+    cdef:
+        const char* _data 
+        size_t      _size 
+        int         _kind
+
+        Py_buffer   _view
+        PyObject*   _pb
+
+        cb_load_fn_t     load
+        
+    cdef inline int _load_bytes(self, object msg) except -1
+    cdef inline int _load_buf(self, object msg) except -1
+    cdef inline int _load_str(self, object msg) except -1
+    cdef inline int _load_obj(self, object msg) except -1
+    cdef inline int _load(self, object msg) except -1
 
 
 ## Only for testing purpose ::
