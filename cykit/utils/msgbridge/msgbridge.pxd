@@ -1,6 +1,6 @@
 from libc.stdint  cimport uint32_t, uint16_t
 from cykit.spsc_queue cimport SPSCQueue
-from cykit.common cimport thread
+from cykit.common cimport thread, atomic_bool
 
 cdef extern from *:
     """
@@ -86,31 +86,19 @@ cdef extern from *:
 
 
 
-ctypedef void (*ad_push_fn_t) (
+ctypedef int (*ad_push_fn_t) (
     AsyncDispatcher,
     const char* data,
     size_t size
 ) noexcept nogil
 
-ctypedef bytes (*ad_pop_fn_t) (
-    AsyncDispatcher
-) except +
 
-
-
-ctypedef void (*sd_push_fn_t) (
+ctypedef int (*sd_push_fn_t) (
     SyncDispatcher,
     const char* data,
     size_t size
 ) noexcept nogil
 
-
-
-ctypedef void (*td_push_fn_t)(
-    ThreadedDispatcher,
-    const char* data,
-    size_t size
-) noexcept nogil
 
 
 
@@ -120,17 +108,16 @@ cdef class AsyncDispatcher:
         NotifyBridge _bridge
 
         ad_push_fn_t push
-        ad_pop_fn_t _pop_func
 
-        object            _callback 
-        object            _sock     
-        object            _task  
+        object _callback 
+        object _sock     
+        object _task  
+        bint   _running
+        bint   _variable_size
 
-    cpdef void setup(self, str host=?)
-    cdef void __try_push(self, const char* data, size_t size) noexcept nogil    
-    cdef void __try_push_var(self, const char* data, size_t size) noexcept nogil
-    cdef inline bytes _try_pop(self)
-    cdef inline bytes _try_pop_var(self)
+    cpdef void setup(self, str host=?, int recvbuf= ?)
+    cdef inline int __try_push(self, const char* data, size_t size) noexcept nogil    
+    cdef inline int __try_push_var(self, const char* data, size_t size) noexcept nogil
 
 
 cdef class SyncDispatcher:
@@ -138,37 +125,31 @@ cdef class SyncDispatcher:
         SPSCQueue _q 
         NotifyBridge _bridge
 
-        bint _daemon
+        bint _detach
         bint _variable_size
 
         sd_push_fn_t push
 
         object            _callback 
         object            _sock  
-
-    cpdef void setup(self, str host=?)
-    cdef void __try_push(self, const char* data, size_t size) noexcept nogil
-    cdef void __try_push_var(self, const char* data, size_t size) noexcept nogil
-    cpdef void _try_pop(self)
-    cpdef void _try_pop_var(self)
-    cdef bytes __try_pop(self)
-    cdef bytes __try_pop_var(self)
-    cpdef void close(self)
-
-
-cdef class ThreadedDispatcher:
-    cdef:
-        SPSCQueue       _q
+        bint            _nonblocking      
+        atomic_bool _running
         thread          _thread
-        object          _callback
-        bint            _variable_size
-        td_push_fn_t    push
 
-    cdef void _push(self, const char* data, size_t size) noexcept nogil
-    cdef void _push_var(self, const char* data, size_t size) noexcept nogil
-    cdef void _reader(self) noexcept nogil
-    cdef void _reader_var(self) noexcept nogil
-    cpdef void setup(self)
+    cpdef void setup(self, str host=?, int recvbuf=?)
+
+    cdef inline int __try_push(self, const char* data, size_t size) noexcept nogil
+    cdef inline int __try_push_var(self, const char* data, size_t size) noexcept nogil
+    
+    cdef inline int __push(self, const char* data, size_t size) noexcept nogil
+    cdef inline int __push_var(self, const char* data, size_t size) noexcept nogil
+    
+    cdef void __try_pop(self) noexcept nogil
+    cdef void __try_pop_var(self) noexcept nogil
+    
+    cdef void __pop(self) noexcept nogil
+    cdef void __pop_var(self) noexcept nogil
+    
     cpdef void close(self)
 
 
@@ -184,5 +165,6 @@ cdef class AsyncQueue:
         object _lock
         object _notify_cond 
         object _task
+        bint   _running
     
     cpdef start_dispatcher(self, object callback)
