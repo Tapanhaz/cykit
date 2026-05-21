@@ -267,7 +267,8 @@ class BuildExt(build_ext):
                             [
                                 "install_name_tool",
                                 "-id",
-                                f"@loader_path/{dylib_file.name}",
+                                # f"@loader_path/{dylib_file.name}",
+                                str(cmake_source_dir / dylib_file.name),
                                 str(cmake_source_dir / dylib_file.name),
                             ]
                         )
@@ -280,7 +281,8 @@ class BuildExt(build_ext):
                                 [
                                     "install_name_tool",
                                     "-id",
-                                    f"@loader_path/{dylib_file.name}",
+                                    # f"@loader_path/{dylib_file.name}",
+                                    str(build_dylib),
                                     str(build_dylib),
                                 ]
                             )
