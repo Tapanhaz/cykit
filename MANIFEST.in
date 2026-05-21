@@ -10,6 +10,7 @@ recursive-include cykit *.pxd *.pyx *.pyi *.cpp *.hpp *.h *.
 recursive-include cykit *.so *.so.* *.dylib *.pyd
 
 recursive-include cykit/utils/boost/include *
+recursive-include cykit/cylogger/include *
 
 include cykit/cylogger/CMakeLists.txt
 include cykit/utils/boost/CMakeLists.txt
