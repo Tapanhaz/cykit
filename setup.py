@@ -40,7 +40,7 @@ class BuildExt(build_ext):
             ext_pkg_dir = Path(*ext.name.split(".")[:-1])
             seen = {"."}
             if system == "Darwin":
-                ext.extra_link_args.append("-Wl,-rpath,@loader_path/")
+                ext.extra_link_args.append("-Wl,-rpath,@loader_path/.")
             else:
                 ext.extra_link_args.append("-Wl,-rpath,$ORIGIN")
             for lib_dir in ext.library_dirs:
