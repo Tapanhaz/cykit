@@ -39,9 +39,10 @@ class BuildExt(build_ext):
         if system != "Windows" and ext.library_dirs:
             ext_pkg_dir = Path(*ext.name.split(".")[:-1])
             seen = {"."}
-            if system == "Darwin":
-                ext.extra_link_args.append("-Wl,-rpath,@loader_path/.")
-            else:
+            # if system == "Darwin":
+            #    ext.extra_link_args.append("-Wl,-rpath,@loader_path/.")
+            # else:
+            if system != "Darwin":
                 ext.extra_link_args.append("-Wl,-rpath,$ORIGIN")
             for lib_dir in ext.library_dirs:
                 lib_pkg_dir = Path(lib_dir)
@@ -50,7 +51,8 @@ class BuildExt(build_ext):
                     continue
                 seen.add(rel)
                 if system == "Darwin":
-                    rpath = f"@loader_path/{rel}"
+                    # rpath = f"@loader_path/{rel}"
+                    rpath = str(lib_pkg_dir.resolve())
                 else:
                     rpath = f"$ORIGIN/{rel}"
                 ext.extra_link_args.append(f"-Wl,-rpath,{rpath}")
