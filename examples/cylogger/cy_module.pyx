@@ -1,6 +1,18 @@
 from cykit.cylogger cimport TRACE, DEBUG_C, INFO_FX
 from cykit.cylogger.color cimport AnsiColor, TextEffect
 
+
+cdef extern from *:
+    """
+    #include <spdlog_logger.hpp>
+
+    void test_cpp_log(){
+        ERROR("This is an ERROR message from c++");
+    }
+    """
+
+    void test_cpp_log() noexcept nogil
+
 cpdef void cy_func():
     cdef:
         int request_id = 1024
@@ -29,3 +41,5 @@ cpdef void cy_func():
             "Request %d completed successfully",
             request_id
         )
+
+        test_cpp_log()

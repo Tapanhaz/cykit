@@ -5,6 +5,10 @@ from cy_module import cy_func
 
 logger = Logger("xyz")
 
+
+class TestClass:
+    pass
+
 logger.trace("This is an TRACE msg from python main module")
 logger.debug("This is an DEBUG msg from python main module")
 logger.info("This is an INFO msg from python main module")
@@ -13,6 +17,11 @@ logger.error("This is an ERROR msg from python main module")
 logger.critical(
     "This is an CRITICAL msg from python main module", effect=TextEffect.BLINK
 )  # noqa E501
+
+logger.info("printing object :: %s", TestClass())
+
+# Multiple arg should be provided as tuple.
+logger.info("printing object :: %s :: %d", (TestClass(), 123)) 
 
 
 # the portion inside %^  %$ will be colored.

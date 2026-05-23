@@ -1,0 +1,96 @@
+[00:52:29] [file: cylogger_test.py] [line: 44] [func: py_func] [trace]  This is an TRACE msg from python main module
+[00:52:29] [file: cylogger_test.py] [line: 45] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[00:52:29] [file: cylogger_test.py] [line: 46] [func: py_func] [info]  This is an INFO msg from python main module
+[00:52:29] [file: cylogger_test.py] [line: 47] [func: py_func] [warning]  This is an WARN msg from python main module
+[00:52:29] [file: cylogger_test.py] [line: 48] [func: py_func] [error]  This is an ERROR msg from python main module
+[00:52:29] [file: cylogger_test.py] [line: 49] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[00:52:29] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[00:52:29] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[00:52:29] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[00:52:29] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[00:52:29] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[00:52:29] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[00:52:29] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[00:52:29] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[00:52:29] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[00:52:29] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [info]  This is INFO message from c++
+[00:53:14] [file: cylogger_test.py] [line: 44] [func: py_func] [trace]  This is an TRACE msg from python main module
+[00:53:14] [file: cylogger_test.py] [line: 45] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[00:53:14] [file: cylogger_test.py] [line: 46] [func: py_func] [info]  This is an INFO msg from python main module
+[00:53:14] [file: cylogger_test.py] [line: 47] [func: py_func] [warning]  This is an WARN msg from python main module
+[00:53:14] [file: cylogger_test.py] [line: 48] [func: py_func] [error]  This is an ERROR msg from python main module
+[00:53:14] [file: cylogger_test.py] [line: 49] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[00:53:14] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[00:53:14] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[00:53:14] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[00:53:14] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[00:53:14] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[00:53:14] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[00:53:14] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[00:53:14] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[00:53:14] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[00:53:14] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [error]  This is ERROR message from c++
+[00:56:02] [file: cylogger_test.py] [line: 49] [func: py_func] [trace]  This is an TRACE msg from python main module
+[00:56:02] [file: cylogger_test.py] [line: 50] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[00:56:02] [file: cylogger_test.py] [line: 51] [func: py_func] [info]  This is an INFO msg from python main module
+[00:56:02] [file: cylogger_test.py] [line: 52] [func: py_func] [warning]  This is an WARN msg from python main module
+[00:56:02] [file: cylogger_test.py] [line: 53] [func: py_func] [error]  This is an ERROR msg from python main module
+[00:56:02] [file: cylogger_test.py] [line: 54] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[00:56:02] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[00:56:02] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[00:56:02] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[00:56:02] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[00:56:02] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[00:56:02] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[00:56:02] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[00:56:02] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[00:56:02] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[00:56:02] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [error]  This is an ERROR message from c++
+[00:59:35] [file: cylogger_test.py] [line: 50] [func: py_func] [trace]  This is an TRACE msg from python main module
+[00:59:35] [file: cylogger_test.py] [line: 51] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[00:59:35] [file: cylogger_test.py] [line: 52] [func: py_func] [info]  This is an INFO msg from python main module
+[00:59:35] [file: cylogger_test.py] [line: 53] [func: py_func] [warning]  This is an WARN msg from python main module
+[00:59:35] [file: cylogger_test.py] [line: 54] [func: py_func] [error]  This is an ERROR msg from python main module
+[00:59:35] [file: cylogger_test.py] [line: 55] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[00:59:35] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[00:59:35] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[00:59:35] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[00:59:35] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[00:59:35] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[00:59:35] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[00:59:35] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[00:59:35] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[00:59:35] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[00:59:35] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [error]  This is an ERROR message from c++
+[01:03:29] [file: cylogger_test.py] [line: 50] [func: py_func] [trace]  This is an TRACE msg from python main module
+[01:03:29] [file: cylogger_test.py] [line: 51] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[01:03:29] [file: cylogger_test.py] [line: 52] [func: py_func] [info]  This is an INFO msg from python main module
+[01:03:29] [file: cylogger_test.py] [line: 53] [func: py_func] [warning]  This is an WARN msg from python main module
+[01:03:29] [file: cylogger_test.py] [line: 54] [func: py_func] [error]  This is an ERROR msg from python main module
+[01:03:29] [file: cylogger_test.py] [line: 55] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[01:03:29] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[01:03:29] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[01:03:29] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[01:03:29] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[01:03:29] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[01:03:29] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[01:03:29] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[01:03:29] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[01:03:29] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[01:03:29] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [error]  This is an ERROR message from c++
+[11:04:36] [file: cylogger_test.py] [line: 53] [func: py_func] [trace]  This is an TRACE msg from python main module
+[11:04:36] [file: cylogger_test.py] [line: 54] [func: py_func] [debug]  This is an DEBUG msg from python main module
+[11:04:36] [file: cylogger_test.py] [line: 55] [func: py_func] [info]  This is an INFO msg from python main module
+[11:04:36] [file: cylogger_test.py] [line: 56] [func: py_func] [warning]  This is an WARN msg from python main module
+[11:04:36] [file: cylogger_test.py] [line: 57] [func: py_func] [error]  This is an ERROR msg from python main module
+[11:04:36] [file: cylogger_test.py] [line: 58] [func: py_func] [critical]  This is an CRITICAL msg from python main module
+[11:04:36] [file: py_module.py] [line: 7] [func: py_module_func] [trace]  This is an TRACE msg from python sub module
+[11:04:36] [file: py_module.py] [line: 8] [func: py_module_func] [debug]  This is an DEBUG msg from python sub module
+[11:04:36] [file: py_module.py] [line: 9] [func: py_module_func] [info]  This is an INFO msg from python sub module
+[11:04:36] [file: py_module.py] [line: 10] [func: py_module_func] [warning]  This is an WARN msg from python sub module
+[11:04:36] [file: py_module.py] [line: 11] [func: py_module_func] [error]  This is an ERROR msg from python sub module
+[11:04:36] [file: py_module.py] [line: 12] [func: py_module_func] [critical]  This is an CRITICAL msg from python sub module
+[11:04:36] [file: cy_module.cpp] [line: 3644] [func: __pyx_f_9cy_module_cy_func] [trace]  Entering component=network (request_id=1024)
+[11:04:36] [file: cy_module.cpp] [line: 3653] [func: __pyx_f_9cy_module_cy_func] [debug]  Request 1024 processed in 18.42 ms
+[11:04:36] [file: cy_module.cpp] [line: 3662] [func: __pyx_f_9cy_module_cy_func] [info]  Request 1024 completed successfully
+[11:04:36] [file: cy_module.cpp] [line: 1190] [func: test_cpp_log] [error]  This is an ERROR message from c++
