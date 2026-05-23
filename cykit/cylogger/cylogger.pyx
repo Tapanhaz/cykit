@@ -120,6 +120,26 @@ cdef class RotatingFileHandler(FileHandler):
         self.max_files = max_files
 
 
+cdef class DailyFileHandler(FileHandler):
+
+    def __init__(
+        self,
+        str filename,
+        str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
+        Level level=Level.TRACE,
+        int rotation_hour=0,
+        int rotation_minute=0,
+        bint truncate=False,
+        uint16_t max_files=0
+            ):
+        super().__init__(filename, pattern=pattern, level=level, overwrite=False)
+        self.rotation_hour = rotation_hour
+        self.rotation_minute = rotation_minute
+        self.truncate = truncate
+        self.max_files = max_files
+
+
+
 cdef class ColorScheme:
     
     def __init__(
@@ -250,6 +270,18 @@ cdef class Logger:
                         h.pattern.encode(),
                         <level_enum>h.level
                     )
+
+                elif isinstance(h, DailyFileHandler):
+                    self.factory.add_daily_file_handler(
+                        h.filename.encode(),
+                        h.rotation_hour,
+                        h.rotation_minute,
+                        h.pattern.encode(),
+                        <level_enum>h.level,
+                        h.truncate,
+                        h.max_files
+                    )
+                    
                 else:
                     PyErr_SetString(PyExc_TypeError, b"Unknown handler type")
         else:

@@ -1,4 +1,5 @@
 
+from libc.stdint cimport uint16_t
 from libcpp cimport bool as cbool
 from libcpp.string cimport string
 from libcpp.memory cimport shared_ptr
@@ -67,6 +68,16 @@ cdef extern from "spdlog_logger.hpp" nogil:
             size_t max_files,
             const string& pattern,
             level_enum level
+        ) except + nogil
+
+        LoggerFactory& add_daily_file_handler(
+            const string& filename,
+            int rotation_hour,
+            int rotation_minute,
+            const string& pattern,
+            level_enum level,
+            cbool truncate,
+            uint16_t max_files
         ) except + nogil
 
         LoggerFactory& set_color(
@@ -253,6 +264,14 @@ cdef class RotatingFileHandler(FileHandler):
     cdef:
         public size_t max_size
         public size_t max_files
+
+
+cdef class DailyFileHandler(FileHandler):
+    cdef:
+        public int rotation_hour
+        public int rotation_minute
+        public bint truncate
+        public uint16_t max_files
 
 
 cdef class ColorScheme:

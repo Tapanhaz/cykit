@@ -171,7 +171,21 @@ LoggerFactory& LoggerFactory::add_rotating_file_handler(
         rotating_file_sink->set_level(level);
         sinks_.push_back(rotating_file_sink);
         return *this;
-}       
+}
+
+LoggerFactory& LoggerFactory::add_daily_file_handler(
+    const std::string& filename, int rotation_hour, int rotation_minute,
+    const std::string& pattern, spdlog::level::level_enum level,
+    bool truncate, uint16_t max_files) {
+
+        auto daily_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+            filename, rotation_hour, rotation_minute, truncate, max_files
+        );
+        daily_sink->set_pattern(pattern);
+        daily_sink->set_level(level);
+        sinks_.push_back(daily_sink);
+        return *this;
+}
         
 LoggerFactory& LoggerFactory::set_color(spdlog::level::level_enum level, int color) {
     std::string color_code;

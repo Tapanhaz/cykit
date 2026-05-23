@@ -14,6 +14,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/daily_file_sink.h>
 
 #ifdef _WIN32
     #include <spdlog/sinks/ansicolor_sink.h>
@@ -362,6 +363,16 @@ public:
         std::size_t max_files,
         const std::string& pattern, 
         spdlog::level::level_enum level = spdlog::level::trace
+    );
+
+    LoggerFactory& add_daily_file_handler(
+        const std::string& filename,
+        int rotation_hour,
+        int rotation_minute,
+        const std::string& pattern,
+        spdlog::level::level_enum level = spdlog::level::trace,
+        bool truncate = false,
+        uint16_t max_files = 0
     );
     
     LoggerFactory& set_color(spdlog::level::level_enum level, int color);
