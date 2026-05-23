@@ -9,12 +9,15 @@ cdef extern from "Python.h":
     void Py_DECREF(PyObject*)
     void Py_XDECREF(PyObject*)
     
+    PyObject* PyObject_Str(PyObject* o) except NULL
     char* PyBytes_AsString(object)
     char* PyBytes_AS_STRING(PyObject*)
     Py_ssize_t PyBytes_Size(object)
     Py_ssize_t PyBytes_GET_SIZE(PyObject*)
     PyObject* PyBytes_FromStringAndSize(char*, Py_ssize_t)
     PyObject* PyUnicode_FromString(const char*)
+    PyObject* PyUnicode_Format(PyObject* format, PyObject* args) except NULL
+    const char* PyUnicode_AsUTF8(PyObject* unicode) except NULL
     
     PyObject* PyObject_CallFunctionObjArgs(PyObject*, ...)
     int Py_AddPendingCall(int (*func)(void*), void*)

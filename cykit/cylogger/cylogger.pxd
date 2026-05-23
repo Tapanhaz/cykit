@@ -275,21 +275,21 @@ cdef class Logger:
     
     cdef SpdLogger get_logger(self)
 
-    cpdef void trace(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void debug(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void info(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void warn(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void error(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void critical(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void trace(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void debug(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void info(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void warn(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void error(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
 
 
 cdef class DefaultLogger:
-    cpdef void trace(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void debug(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void info(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void warn(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void error(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
-    cpdef void critical(self, str msg, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void trace(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void debug(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void info(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void warn(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void error(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
 
 cdef SpdLogger get_logger_by_name(const char* name)
 #cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= *, bint fallback_to_default= *)

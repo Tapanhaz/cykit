@@ -1,9 +1,35 @@
 
-from cpython.bytes cimport PyBytes_AsString 
-from cykit.common cimport PyErr_SetString, PyExc_TypeError
-from cykit.common cimport PyObject
-import logging as py_logging
+
 import traceback
+import logging as py_logging
+from cykit.common cimport (
+    PyObject,
+    Py_DECREF,
+    PyObject_Str,
+    PyExc_TypeError,
+    PyErr_SetString, 
+    PyUnicode_Format,
+    PyUnicode_AsUTF8,
+)
+
+
+cdef inline const char* _format_msg(
+            PyObject* fmt, 
+            PyObject* args, 
+            PyObject** out
+        ) except NULL:
+
+    cdef PyObject* result = NULL
+    if args == NULL:
+        result = PyObject_Str(fmt)
+    else:
+        result = PyUnicode_Format(fmt, args)
+    if result == NULL:
+        out[0] = NULL
+        return NULL
+    out[0] = result
+    return PyUnicode_AsUTF8(result)
+
 
 
 cdef class LogHandler:
@@ -163,7 +189,7 @@ cdef void redirect_pylog():
 
 cdef class Logger:
     
-    def __cinit__(
+    def __init__(
             self, 
             str name, 
             Level level=  Level.TRACE,
@@ -260,43 +286,152 @@ cdef class Logger:
     cdef SpdLogger get_logger(self):
         return self._logger    
     
-    cpdef void trace(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        TRACE_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())        
+    cpdef void trace(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
         
-    cpdef void debug(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        DEBUG_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-        
-    cpdef void info(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        INFO_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-    
-    cpdef void warn(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        WARN_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-    
-    cpdef void error(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        ERROR_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
+        if c_msg != NULL:
+            TRACE_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg) 
 
-    cpdef void critical(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        CRITICAL_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())   
+            Py_DECREF(holder)
+
+        
+    cpdef void debug(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            DEBUG_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+        
+    cpdef void info(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            INFO_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+    
+    cpdef void warn(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            WARN_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+    
+    cpdef void error(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            ERROR_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+
+    cpdef void critical(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            CRITICAL_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)   
+
+            Py_DECREF(holder)
 
 
 cdef class DefaultLogger:
-    cpdef void trace(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        TRACE_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())        
+    cpdef void trace(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
         
-    cpdef void debug(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        DEBUG_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-        
-    cpdef void info(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        INFO_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-    
-    cpdef void warn(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        WARN_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
-    
-    cpdef void error(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        ERROR_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())
+        if c_msg != NULL:
+            TRACE_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)        
 
-    cpdef void critical(self, str msg, int fg_color= -1, int bg_color= -1, int effect= -1):
-        CRITICAL_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = msg.encode())      
+            Py_DECREF(holder)
+        
+    cpdef void debug(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            DEBUG_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+        
+    cpdef void info(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            INFO_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+    
+    cpdef void warn(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            WARN_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+    
+    cpdef void error(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            ERROR_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+
+            Py_DECREF(holder)
+
+    cpdef void critical(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL 
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+        
+        if c_msg != NULL:
+            CRITICAL_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)      
+
+            Py_DECREF(holder)
 
 
 cdef SpdLogger get_logger_by_name(const char* name):
