@@ -64,4 +64,4 @@ cdef class SPSCQueue:
     cdef int pop_var(self, char** out_buf, size_t* out_size) noexcept nogil
     cdef int try_pop_var(self, char** out_buf, size_t* out_size) noexcept nogil
     
-    cdef void close(self) noexcept nogil
+    cdef int close(self, long timeout_ms = ?) noexcept nogil

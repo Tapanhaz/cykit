@@ -21,6 +21,12 @@ from cykit.utils.signal_handler cimport (
     cleanup_signal_handler
 )
 
+from cykit.utils.compat cimport (
+    clock_gettime_, 
+    CLOCK_MONOTONIC_, 
+    usleep_,
+    timespec_
+)
 
 
 cdef void spsc_queue_notify(void* ctx) noexcept nogil:
@@ -32,6 +38,14 @@ cdef void spsc_queue_notify(void* ctx) noexcept nogil:
 
     atomic_notify_one(&q.tail)
     atomic_notify_one(&q.head)
+
+
+cdef inline bint _is_queue_empty(SPSCQueueImpl* q) noexcept nogil:
+    return q.head.load(memory_order_relaxed) == q.tail.load(memory_order_relaxed)
+
+cdef inline long _elapsed_ms(timespec_* start, timespec_* now) noexcept nogil:
+    return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) // 1000000
+
 
 
 cdef class SPSCQueue:
@@ -593,11 +607,29 @@ cdef class SPSCQueue:
                 return SPSC_OK
         
 
-    cdef void close(self) noexcept nogil:
-        self._q.running.store(0, memory_order_release)
+    cdef int close(self, long timeout_ms = 0) noexcept nogil:
+        cdef:
+            timespec_ start, now
+            long elapsed = 0
+            int sleep_us = 1000 
 
+        self._q.flags |= F_CLOSING
+
+        if timeout_ms > 0:
+            clock_gettime_(CLOCK_MONOTONIC_, &start)
+
+            while not _is_queue_empty(&self._q):
+                clock_gettime_(CLOCK_MONOTONIC_, &now)
+                elapsed = _elapsed_ms(&start, &now)
+                if elapsed >= timeout_ms:
+                    break
+                usleep_(sleep_us)
+
+        self._q.running.store(0, memory_order_release)
         atomic_notify_one(&self._q.tail)
         atomic_notify_one(&self._q.head)
+
+        return 0 if _is_queue_empty(&self._q) else -1
     
     def __dealloc__(self):
         self.close()
