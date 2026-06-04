@@ -291,6 +291,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         string recv(size_t max_size) except +
         string recv_exactly(size_t need) except +
         string peek(size_t max_size) except +
+        cbool is_open() noexcept
 
 
     cdef cppclass UdpSocket:
@@ -305,6 +306,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         void sendto(const string& data) except +
         pair[string, sockaddr_storage] recvfrom(size_t max_size) except +
         void close() except +
+        cbool is_open() noexcept
 
     cdef cppclass OAuth2Config:
         string client_id

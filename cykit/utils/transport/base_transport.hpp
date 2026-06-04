@@ -782,6 +782,8 @@ public:
         return buf;
     }
 
+    bool is_open() const noexcept { return fd_ != INVALID_RAW_SOCKET; }
+
 private:
     RAW_SOCKET fd_;
 };
@@ -892,6 +894,8 @@ public:
             fd_ = INVALID_RAW_SOCKET;
         }
     }
+
+    bool is_open() const noexcept { return fd_ != INVALID_RAW_SOCKET; }
 
 private:
     using RAW_SOCKET = intptr_t;
