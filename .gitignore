@@ -15,4 +15,4 @@ dist/
 
 cykit/cylogger/build/
 
-!cykit/cylogger/spdlog_logger.cpp
+!cykit/cylogger/spdlog_logger.cppexamples/cylogger/test.log
