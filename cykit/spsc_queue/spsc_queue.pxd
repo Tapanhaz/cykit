@@ -6,6 +6,7 @@ cdef enum:
     F_OVERWRITE     = 1 << 0
     F_ZEROCOPY      = 1 << 1
     F_BLOCK_ON_FULL = 1 << 2
+    F_CLOSING       = 1 << 3
 
 cdef enum:
     SPSC_OK    = 1

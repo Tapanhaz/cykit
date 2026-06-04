@@ -29,6 +29,7 @@ from cykit.utils.compat cimport (
 )
 
 
+
 cdef void spsc_queue_notify(void* ctx) noexcept nogil:
     cdef SPSCQueueImpl* q = <SPSCQueueImpl*>ctx
     q.running.store(0, memory_order_release)
@@ -114,6 +115,9 @@ cdef class SPSCQueue:
         cdef:
             uint64_t head, tail, idx
             SPSCSlot* slot
+        
+        if self._q.flags & F_CLOSING:
+            return SPSC_ERR
 
         while self._q.running.load(memory_order_acquire):
 
@@ -135,7 +139,7 @@ cdef class SPSCQueue:
 
                     atomic_wait(&self._q.head, head)
 
-                    if not self._q.running.load(memory_order_acquire):
+                    if not self._q.running.load(memory_order_acquire) or (self._q.flags & F_CLOSING):
                         return SPSC_ERR
 
                     continue
@@ -174,7 +178,7 @@ cdef class SPSCQueue:
             uint64_t head, tail, idx
             SPSCSlot* slot
 
-        if not self._q.running.load(memory_order_acquire):
+        if not self._q.running.load(memory_order_acquire) or (self._q.flags & F_CLOSING):
             return SPSC_ERR
 
         head = self._q.head.load(memory_order_acquire)
@@ -224,6 +228,9 @@ cdef class SPSCQueue:
             uint16_t total_chunks, chunk_idx, chunks_left
             uint32_t seq_id
 
+        if self._q.flags & F_CLOSING:
+            return SPSC_ERR
+
         total_chunks = <uint16_t>((size + self._q.slot_size - 1) / self._q.slot_size)
         seq_id       = self._q.seq_counter
         self._q.seq_counter += 1
@@ -256,7 +263,7 @@ cdef class SPSCQueue:
                         atomic_notify_one(&self._q.tail)
                         atomic_wait(&self._q.head, head)
 
-                        if not self._q.running.load(memory_order_acquire):
+                        if not self._q.running.load(memory_order_acquire) or (self._q.flags & F_CLOSING):
                             return SPSC_ERR
 
                         continue
@@ -305,7 +312,7 @@ cdef class SPSCQueue:
             uint16_t total_chunks, chunk_idx, chunks_left
             uint32_t seq_id
 
-        if not self._q.running.load(memory_order_acquire):
+        if not self._q.running.load(memory_order_acquire) or (self._q.flags & F_CLOSING):
             return SPSC_ERR
 
         total_chunks = <uint16_t>((size + self._q.slot_size - 1) / self._q.slot_size)
@@ -630,6 +637,7 @@ cdef class SPSCQueue:
         atomic_notify_one(&self._q.head)
 
         return 0 if _is_queue_empty(&self._q) else -1
+        
     
     def __dealloc__(self):
         self.close()
