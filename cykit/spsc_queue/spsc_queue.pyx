@@ -633,6 +633,10 @@ cdef class SPSCQueue:
                 usleep_(sleep_us)
 
         self._q.running.store(0, memory_order_release)
+
+        self._q.tail.fetch_add(1, memory_order_release)
+        self._q.head.fetch_add(1, memory_order_release)
+        
         atomic_notify_one(&self._q.tail)
         atomic_notify_one(&self._q.head)
 
