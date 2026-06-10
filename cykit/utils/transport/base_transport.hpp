@@ -223,7 +223,7 @@ inline void apply_header_list_insert(http::request<Body>& req,
 template<typename Body>
 inline void apply_user_agent_rule(http::request<Body>& req,
                                   const std::string& explicit_ua,
-                                  const std::string& default_ua = "TransportLib/3.0") {
+                                  const std::string& default_ua = "CykitTransport/1.0") {
                                     
     if (!explicit_ua.empty())
         req.set(http::field::user_agent, explicit_ua);
@@ -547,7 +547,8 @@ struct RetryPolicy {
     std::set<TransportErrorKind> retryable_kinds = {
         TransportErrorKind::Timeout,
         TransportErrorKind::Connect,
-        TransportErrorKind::Remote
+        TransportErrorKind::Remote,
+        TransportErrorKind::Local,
     };
 
     IdempotencyClass idempotency = IdempotencyClass::Idempotent;    
@@ -585,12 +586,34 @@ struct KeepAliveConfig {
     }
 };
 
-
-
 inline auto duration_from_seconds(double secs) {
     return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(secs));
 }
+
+struct TransportTimeouts {
+    double connect_sec   = 10.0;  
+    double tls_sec       = 10.0;  
+    double write_sec     = 30.0;  
+    double read_sec      = 30.0;  
+    double body_sec      = 60.0;  
+    double total_sec     = 0.0;   
+                                  
+    double pool_idle_sec = 0.0;   
+                                  
+    explicit TransportTimeouts(double all) noexcept
+        : connect_sec(all), tls_sec(all), write_sec(all)
+        , read_sec(all), body_sec(all), total_sec(0.0) {}
+
+    TransportTimeouts() = default;
+
+    auto connect_dur() const { return duration_from_seconds(connect_sec > 0 ? connect_sec : read_sec); }
+    auto tls_dur()     const { return duration_from_seconds(tls_sec     > 0 ? tls_sec     : read_sec); }
+    auto write_dur()   const { return duration_from_seconds(write_sec   > 0 ? write_sec   : read_sec); }
+    auto read_dur()    const { return duration_from_seconds(read_sec); }
+    auto body_dur()    const { return duration_from_seconds(body_sec    > 0 ? body_sec    : read_sec); }
+};
+
 
 inline double jitter_factor_sample(double base_delay, double factor) noexcept {
     thread_local std::mt19937_64 eng{std::random_device{}()};
@@ -965,7 +988,8 @@ struct RequestOptions {
     
     std::string user_agent;
     
-    double      timeout_sec   = 0.0;
+    double timeout_sec   = 0.0;
+    TransportTimeouts  timeouts; 
     
     std::optional<TlsPolicy> tls_policy;
     
@@ -993,19 +1017,19 @@ class HttpClient {
                             KeepAliveConfig ka_cfg     = {},
                             TransportHooks  hooks      = {},
                             HeaderList   persistent_headers = {},
-                            std::string  user_agent    = "TransportLib/3.0",
-                            double       timeout_sec   = 30.0,
+                            std::string  user_agent    = "CykitTransport/1.0",
+                            TransportTimeouts timeouts = {},
                             int          max_redirects = 10,
                             std::shared_ptr<CookieJar> cookie_jar = nullptr)
-            : tls_policy_(std::move(tls_policy))
-            , retry_policy_(std::move(retry_policy))
-            , ka_cfg_(std::move(ka_cfg))
-            , hooks_(std::move(hooks))
-            , persistent_headers_(std::move(persistent_headers))
-            , user_agent_(std::move(user_agent))
-            , timeout_sec_(timeout_sec)
-            , max_redirects_(max_redirects)
-            , cookie_jar_(cookie_jar
+            : tls_policy_(std::move(tls_policy)), 
+              retry_policy_(std::move(retry_policy)),
+              ka_cfg_(std::move(ka_cfg)),
+              hooks_(std::move(hooks)),
+              persistent_headers_(std::move(persistent_headers)),
+              user_agent_(std::move(user_agent)),
+              timeouts_(std::move(timeouts)),
+              max_redirects_(max_redirects),
+              cookie_jar_(cookie_jar
                            ? std::move(cookie_jar)
                            : std::make_shared<CookieJar>()) {}
                            
@@ -1183,15 +1207,27 @@ class HttpClient {
                                         const std::string& ct,
                                         const RequestOptions& opts) {
             const RetryPolicy& rp = opts.retry_policy.value_or(retry_policy_);
-            const double       to = (opts.timeout_sec > 0.0)
-                                  ? opts.timeout_sec : timeout_sec_;
+            const TransportTimeouts eff_to = (opts.timeout_sec > 0.0)
+                                            ? TransportTimeouts(opts.timeout_sec)
+                                            : (opts.timeouts.read_sec > 0.0 ? opts.timeouts : timeouts_);
             const TlsPolicy&   tp = opts.tls_policy.value_or(tls_policy_);
     
             ParsedUrl pu = parse_url(url);
     
             TransportError last_err;
+
+            const auto total_deadline =
+                (eff_to.total_sec > 0.0)
+                ? std::optional<std::chrono::steady_clock::time_point>(
+                      std::chrono::steady_clock::now()
+                    + duration_from_seconds(eff_to.total_sec))
+                : std::nullopt;
     
             for (int attempt = 0; attempt < rp.max_attempts; ++attempt) {
+                if (total_deadline &&
+                    std::chrono::steady_clock::now() >= *total_deadline)
+                    throw TransportError::timeout("total timeout exceeded");
+
                 opts.cancel_token.throw_if_cancelled();
     
                 if (attempt > 0) {
@@ -1212,7 +1248,7 @@ class HttpClient {
     
                 try {
                     HttpResponse resp =
-                        do_wire_request(method, pu, body, ct, opts, to, tp);
+                        do_wire_request(method, pu, body, ct, opts, eff_to, tp);
     
                     if (rp.should_retry_status(resp.status) &&
                         attempt + 1 < rp.max_attempts) {
@@ -1258,7 +1294,7 @@ class HttpClient {
                                       const std::string& body,
                                       const std::string& ct,
                                       const RequestOptions& opts,
-                                      double timeout_sec,
+                                      const TransportTimeouts& to,
                                       const TlsPolicy& tp) {
             asio::io_context ioc;
             auto endpoints = tcp::resolver(ioc).resolve(pu.host,
@@ -1312,9 +1348,7 @@ class HttpClient {
                 opts.hooks->on_before_request(wire_extra);
                 apply_header_list(req, wire_extra);
             }
-    
-            auto dur = duration_from_seconds(timeout_sec);
-            
+                
             auto read_response = [&](auto& stream) -> HttpResponse {
                 opts.cancel_token.throw_if_cancelled();
                 beast::flat_buffer fb;
@@ -1325,7 +1359,7 @@ class HttpClient {
                     http::response_parser<http::buffer_body> parser;
                     parser.body_limit(std::numeric_limits<uint64_t>::max());
                     beast::get_lowest_layer(stream)
-                        .expires_after(dur);
+                        .expires_after(to.read_dur());
                     http::read_header(stream, fb, parser);
     
                     HttpResponse resp;
@@ -1346,7 +1380,7 @@ class HttpClient {
                         parser.get().body().data = buf.data();
                         parser.get().body().size = buf.size();
                         boost::system::error_code ec;
-                        beast::get_lowest_layer(stream).expires_after(dur);
+                        beast::get_lowest_layer(stream).expires_after(to.body_dur());
                         http::read(stream, fb, parser, ec);
                         if (ec && ec != http::error::need_buffer) break;
                         size_t used = buf.size() - parser.get().body().size;
@@ -1361,7 +1395,7 @@ class HttpClient {
                     return resp;
                 } else {
                     http::response<http::dynamic_body> res;
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.read_dur());
                     http::read(stream, fb, res);
     
                     HttpResponse resp;
@@ -1388,10 +1422,10 @@ class HttpClient {
                     if (tp.verify_hostname)
                         SSL_set_tlsext_host_name(stream.native_handle(),
                                                  pu.host.c_str());
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.connect_dur());
                     opts.cancel_token.throw_if_cancelled();
                     beast::get_lowest_layer(stream).connect(endpoints);
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.tls_dur());
                     stream.handshake(ssl::stream_base::client);
                     
                     const unsigned char* proto = nullptr;
@@ -1407,7 +1441,7 @@ class HttpClient {
                     return resp;
                 } else {
                     beast::tcp_stream stream(ioc);
-                    stream.expires_after(dur);
+                    stream.expires_after(to.connect_dur());
                     opts.cancel_token.throw_if_cancelled();
                     stream.connect(endpoints);
                     http::write(stream, req);
@@ -1430,7 +1464,7 @@ class HttpClient {
         TransportHooks      hooks_;
         HeaderList          persistent_headers_;
         std::string         user_agent_;
-        double              timeout_sec_;
+        TransportTimeouts   timeouts_;
         int                 max_redirects_;
         std::shared_ptr<CookieJar> cookie_jar_;
 };
@@ -1444,9 +1478,9 @@ class HttpSession {
                     std::string         base_path           = "/",
                     std::string         default_content_type = "application/json",
                     HeaderList          persistent_headers  = {},
-                    std::string         user_agent          = "TransportLib/3.0",
+                    std::string         user_agent          = "CykitTransport/1.0",
                     bool                use_tls             = true,
-                    double              timeout_sec         = 30.0,
+                    TransportTimeouts   timeouts            = {},
                     TlsPolicy           tls_policy          = {},
                     RetryPolicy         retry_policy        = {},
                     KeepAliveConfig     ka_cfg              = {},
@@ -1460,7 +1494,7 @@ class HttpSession {
             , persistent_headers_(std::move(persistent_headers))
             , user_agent_(std::move(user_agent))
             , use_tls_(use_tls)
-            , timeout_sec_(timeout_sec)
+            , timeouts_(std::move(timeouts))
             , tls_policy_(std::move(tls_policy))
             , retry_policy_(std::move(retry_policy))
             , ka_cfg_(std::move(ka_cfg))
@@ -1476,7 +1510,10 @@ class HttpSession {
             reconnect();
         }
     
-        ~HttpSession() { disconnect(); }
+        ~HttpSession() {
+            force_close();   
+            disconnect();    
+        }
     
         HttpSession(const HttpSession&)            = delete;
         HttpSession& operator=(const HttpSession&) = delete;
@@ -1518,15 +1555,15 @@ class HttpSession {
             disconnect_locked();
             auto endpoints = tcp::resolver(ioc_)
                                  .resolve(host_, std::to_string(port_));
-            auto dur = duration_from_seconds(timeout_sec_);
+                                 
             if (use_tls_) {
                 tls_stream_.emplace(ioc_, ssl_ctx_);
                 if (tls_policy_.verify_hostname)
                     SSL_set_tlsext_host_name(tls_stream_->native_handle(),
                                              host_.c_str());
-                beast::get_lowest_layer(*tls_stream_).expires_after(dur);
+                beast::get_lowest_layer(*tls_stream_).expires_after(timeouts_.connect_dur());
                 beast::get_lowest_layer(*tls_stream_).connect(endpoints);
-                beast::get_lowest_layer(*tls_stream_).expires_after(dur);
+                beast::get_lowest_layer(*tls_stream_).expires_after(timeouts_.tls_dur());
                 tls_stream_->handshake(ssl::stream_base::client);
                 
                 ka_cfg_.apply(static_cast<intptr_t>(
@@ -1534,7 +1571,7 @@ class HttpSession {
                         .socket().native_handle()));
             } else {
                 plain_stream_.emplace(ioc_);
-                plain_stream_->expires_after(dur);
+                plain_stream_->expires_after(timeouts_.connect_dur());
                 plain_stream_->connect(endpoints);
                 ka_cfg_.apply(static_cast<intptr_t>(
                     plain_stream_->socket().native_handle()));
@@ -1547,16 +1584,31 @@ class HttpSession {
             std::unique_lock<std::shared_mutex> lk(stream_mtx_);
             disconnect_locked();
         }
+
+        void force_close() noexcept {
+            boost::system::error_code ec;
+            std::unique_lock<std::shared_mutex> lk(stream_mtx_);
+            if (tls_stream_) {
+                beast::get_lowest_layer(*tls_stream_).cancel();
+                beast::get_lowest_layer(*tls_stream_).socket().close(ec);
+            }
+            if (plain_stream_) {
+                plain_stream_->cancel();
+                plain_stream_->socket().close(ec);
+            }
+        }
     
     private:
-        void disconnect_locked() {
+        void disconnect_locked() noexcept {
             boost::system::error_code ec;
             if (tls_stream_) {
-                tls_stream_->shutdown(ec);
+                beast::get_lowest_layer(*tls_stream_).cancel();
+                beast::get_lowest_layer(*tls_stream_).socket().close(ec);
                 tls_stream_.reset();
             }
             if (plain_stream_) {
-                plain_stream_->socket().shutdown(tcp::socket::shutdown_both, ec);
+                plain_stream_->cancel();
+                plain_stream_->socket().close(ec);
                 plain_stream_.reset();
             }
         }
@@ -1564,8 +1616,11 @@ class HttpSession {
         bool needs_reconnect() const noexcept {
             if (request_count_ >= static_cast<unsigned>(ka_cfg_.max_requests))
                 return true;
+            double max_age = (timeouts_.pool_idle_sec > 0.0)
+                           ? timeouts_.pool_idle_sec
+                           : ka_cfg_.max_age_sec;
             auto age = std::chrono::steady_clock::now() - connect_time_;
-            return std::chrono::duration<double>(age).count() >= ka_cfg_.max_age_sec;
+            return std::chrono::duration<double>(age).count() >= max_age;
         }
         
         HttpResponse do_request(http::verb        verb,
@@ -1574,8 +1629,9 @@ class HttpSession {
                                  const std::string& body,
                                  RequestOptions     opts) {
             const RetryPolicy& rp = opts.retry_policy.value_or(retry_policy_);
-            const double       to = (opts.timeout_sec > 0.0)
-                                  ? opts.timeout_sec : timeout_sec_;
+            const TransportTimeouts eff_to = (opts.timeout_sec > 0.0)
+                                            ? TransportTimeouts(opts.timeout_sec)
+                                            : (opts.timeouts.read_sec > 0.0 ? opts.timeouts : timeouts_);
     
             std::string target = base_path_;
             if (!path.empty()) {
@@ -1635,10 +1691,20 @@ class HttpSession {
                 apply_header_list(req, wire_extra);
             }
     
-            auto dur = duration_from_seconds(to);
             TransportError last_err;
+
+            const auto total_deadline =
+                (eff_to.total_sec > 0.0)
+                ? std::optional<std::chrono::steady_clock::time_point>(
+                      std::chrono::steady_clock::now()
+                    + duration_from_seconds(eff_to.total_sec))
+                : std::nullopt;
     
             for (int attempt = 0; attempt < rp.max_attempts; ++attempt) {
+                if (total_deadline &&
+                    std::chrono::steady_clock::now() >= *total_deadline)
+                    throw TransportError::timeout("total timeout exceeded");
+
                 opts.cancel_token.throw_if_cancelled();
     
                 if (attempt > 0) {
@@ -1666,7 +1732,7 @@ class HttpSession {
                         lk.unlock(); reconnect(); lk.lock();
                     }
     
-                    HttpResponse resp = send_recv_locked(req, opts, dur);
+                    HttpResponse resp = send_recv_locked(req, opts, eff_to);
                     ++request_count_;
                     
                     for (const auto& sc : resp.header_all("Set-Cookie"))
@@ -1703,11 +1769,20 @@ class HttpSession {
                     return resp;
     
                 } catch (const boost::system::system_error& se) {
-                    last_err = TransportError(se.what(), TransportErrorKind::Connect,
-                                              se.code().value());
-                                              
-                    { std::unique_lock<std::shared_mutex> lk(stream_mtx_);
-                      disconnect_locked(); }
+                    const auto ec = se.code();
+                    const bool peer_closed =
+                        (ec == asio::error::connection_reset ||
+                         ec == asio::error::broken_pipe      ||
+                         ec == boost::beast::http::error::end_of_stream ||
+                         ec == asio::error::eof);
+    
+                    last_err = TransportError(
+                        se.what(),
+                        peer_closed ? TransportErrorKind::Local  
+                                    : TransportErrorKind::Connect,
+                        ec.value());
+    
+                    disconnect_locked();
     
                     if (!rp.should_retry_error(last_err) ||
                         attempt + 1 >= rp.max_attempts) {
@@ -1730,20 +1805,20 @@ class HttpSession {
         }
         
         HttpResponse send_recv_locked(const http::request<http::string_body>& req,
-                                       const RequestOptions& opts,
-                                       std::chrono::steady_clock::duration dur) {
+                                                        const RequestOptions& opts,
+                                                        const TransportTimeouts& to) {
             auto do_io = [&](auto& stream) -> HttpResponse {
                 opts.cancel_token.throw_if_cancelled();
                 beast::flat_buffer fb;
     
                 if (opts.body_chunk_cb ||
                     (opts.hooks && opts.hooks->on_body_chunk)) {
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.write_dur());
                     http::write(stream, req);
     
                     http::response_parser<http::buffer_body> parser;
                     parser.body_limit(std::numeric_limits<uint64_t>::max());
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.read_dur());
                     http::read_header(stream, fb, parser);
     
                     HttpResponse resp;
@@ -1763,7 +1838,7 @@ class HttpSession {
                         parser.get().body().data = buf.data();
                         parser.get().body().size = buf.size();
                         boost::system::error_code ec;
-                        beast::get_lowest_layer(stream).expires_after(dur);
+                        beast::get_lowest_layer(stream).expires_after(to.body_dur());
                         http::read(stream, fb, parser, ec);
                         if (ec && ec != http::error::need_buffer) break;
                         size_t used = buf.size() - parser.get().body().size;
@@ -1777,10 +1852,10 @@ class HttpSession {
                     }
                     return resp;
                 } else {
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.write_dur());
                     http::write(stream, req);
                     http::response<http::dynamic_body> res;
-                    beast::get_lowest_layer(stream).expires_after(dur);
+                    beast::get_lowest_layer(stream).expires_after(to.read_dur());
                     http::read(stream, fb, res);
     
                     HttpResponse resp;
@@ -1810,7 +1885,7 @@ class HttpSession {
         HeaderList          persistent_headers_;
         std::string         user_agent_;
         bool                use_tls_;
-        double              timeout_sec_;
+        TransportTimeouts   timeouts_;
         TlsPolicy           tls_policy_;
         RetryPolicy         retry_policy_;
         KeepAliveConfig     ka_cfg_;
@@ -2002,7 +2077,7 @@ public:
             m << "Reply-To: " << reply_to_<< "\r\n";
         m << "Subject: "      << subject_ << "\r\n"
           << "MIME-Version: 1.0\r\n"
-          << "X-Mailer: TransportLib/3.0\r\n";
+          << "X-Mailer: CykitTransport/1.0\r\n";
           
         const std::string plain = normalize_crlf(body_text_);
         const std::string html  = normalize_crlf(body_html_);
