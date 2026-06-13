@@ -123,4 +123,11 @@ cdef extern from *:
     thread make_thread[F, A](F f, A a) noexcept nogil
 
 
-cdef bint is_power_of_two(uint32_t n) noexcept nogil
+
+
+cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
+    return n != 0 and (n & (n - 1)) == 0
+
+
+
+
