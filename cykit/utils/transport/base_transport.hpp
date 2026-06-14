@@ -3,8 +3,11 @@
  * @file base_transport.hpp
  * @brief Minimal transport base containing UDP, TCP, HTTP, and SMTP clients.
  * @date 2026-06-04
- * @copyright Part of the cykit library.
-*/
+ * @copyright Part of the https://github.com/Tapanhaz/cykit library.
+ *
+ * @note All calls are blocking. HTTP is 1.1 only. UDP is best-effort.
+ *       SMTP is outbound only. No proxy, WebSocket, or async support.
+ */
 
 
 #pragma once
@@ -73,34 +76,43 @@ using tcp = asio::ip::tcp;
 #endif
 
 #ifdef _WIN32
-#  define SET_SOCK_TIMEOUT_IMPL(fd, secs)                             \
-    do {                                                              \
-        DWORD _ms = static_cast<DWORD>((secs) * 1000.0);              \
-        setsockopt((fd), SOL_SOCKET, SO_SNDTIMEO,                     \
-                   reinterpret_cast<const char*>(&_ms), sizeof(_ms)); \
-        setsockopt((fd), SOL_SOCKET, SO_RCVTIMEO,                     \
-                   reinterpret_cast<const char*>(&_ms), sizeof(_ms)); \
-    } while(0)
+#  define SET_SOCK_TIMEOUT_RECV(fd, secs) \
+do \
+    { \
+       DWORD ms_ = static_cast<DWORD>((secs) * 1000); \
+       setsockopt((fd), SOL_SOCKET, SO_RCVTIMEO, \
+                  reinterpret_cast<const char*>(&ms_), sizeof(ms_)); \
+   } while(0)
+#  define SET_SOCK_TIMEOUT_SEND(fd, secs) \
+do \
+    { \
+       DWORD ms_ = static_cast<DWORD>((secs) * 1000); \
+       setsockopt((fd), SOL_SOCKET, SO_SNDTIMEO, \
+                  reinterpret_cast<const char*>(&ms_), sizeof(ms_)); \
+   } while(0)
 #else
-#  define SET_SOCK_TIMEOUT_IMPL(fd, secs)                             \
-    do {                                                              \
-        long _tv_sec  = static_cast<long>(secs);                      \
-        long _tv_usec = static_cast<long>(((secs) - _tv_sec) * 1e6);  \
-        struct timeval _tv { _tv_sec, _tv_usec };                     \
-        setsockopt((fd), SOL_SOCKET, SO_SNDTIMEO, &_tv, sizeof(_tv)); \
-        setsockopt((fd), SOL_SOCKET, SO_RCVTIMEO, &_tv, sizeof(_tv)); \
-    } while(0)
+#  define SET_SOCK_TIMEOUT_RECV(fd, secs) \
+do \
+    { \
+       struct timeval tv_ { static_cast<long>(secs), \
+           static_cast<long>(((secs) - static_cast<long>(secs)) * 1e6) }; \
+       setsockopt((fd), SOL_SOCKET, SO_RCVTIMEO, &tv_, sizeof(tv_)); \
+   } while(0)
+#  define SET_SOCK_TIMEOUT_SEND(fd, secs) \
+do \
+    { \
+       struct timeval tv_ { static_cast<long>(secs), \
+           static_cast<long>(((secs) - static_cast<long>(secs)) * 1e6) }; \
+       setsockopt((fd), SOL_SOCKET, SO_SNDTIMEO, &tv_, sizeof(tv_)); \
+   } while(0)
 #endif
 
-#define SET_SOCK_TIMEOUT(fd, secs)                                    \
-    do {                                                              \
-        DIAG_PUSH                                                     \
-        DIAG_UNUSED_VAR                                               \
-        DIAG_CONST_COND                                               \
-        double _to_s = (secs);                                        \
-        DIAG_POP                                                      \
-        SET_SOCK_TIMEOUT_IMPL((fd), _to_s);                           \
-    } while(0)
+#define SET_SOCK_TIMEOUT(fd, secs) \
+    do \
+        { \
+            SET_SOCK_TIMEOUT_RECV(fd, secs); \
+            SET_SOCK_TIMEOUT_SEND(fd, secs); \
+        } while(0)
 
 
 enum class TransportErrorKind : uint8_t {
@@ -614,6 +626,32 @@ struct TransportTimeouts {
     auto body_dur()    const { return duration_from_seconds(body_sec    > 0 ? body_sec    : read_sec); }
 };
 
+struct SmtpTimeouts {
+    double connect_sec   = 10.0;  
+    double tls_sec       = 10.0;  
+    double banner_sec    = 10.0;  
+    double command_sec   = 30.0;  
+    double data_sec      = 60.0;  
+    double response_sec  = 30.0;  
+    
+    explicit SmtpTimeouts(double all) noexcept
+        : connect_sec(all), tls_sec(all), banner_sec(all)
+        , command_sec(all), data_sec(all), response_sec(all) {}
+
+    SmtpTimeouts() = default;
+};
+
+struct TcpTimeouts {
+    double connect_sec = 10.0;  
+    double read_sec    = 30.0;  
+    double write_sec   = 30.0;  
+
+    explicit TcpTimeouts(double all) noexcept
+        : connect_sec(all), read_sec(all), write_sec(all) {}
+
+    TcpTimeouts() = default;
+};
+
 
 inline double jitter_factor_sample(double base_delay, double factor) noexcept {
     thread_local std::mt19937_64 eng{std::random_device{}()};
@@ -621,6 +659,9 @@ inline double jitter_factor_sample(double base_delay, double factor) noexcept {
     return base_delay * factor * dist(eng);
 }
 
+//************************************************************************************************
+//************************************    TCP     ************************************************
+//************************************************************************************************
 
 class TcpSocket {
 private:
@@ -646,7 +687,7 @@ public:
         return *this;
     }
     
-    void connect(const std::string& host, uint16_t port, double timeout_sec, bool keepalive, CancelToken token = {}) {
+    void connect(const std::string& host, uint16_t port, TcpTimeouts timeouts, bool keepalive, CancelToken token = {}) {
         close();
 #ifdef _WIN32
 
@@ -692,10 +733,20 @@ public:
                 fd_set wset;
                 FD_ZERO(&wset);
                 FD_SET(fd, &wset);
-                long tv_sec = static_cast<long>(timeout_sec);
-                long tv_usec = static_cast<long>((timeout_sec - tv_sec) * 1e6);
+                long tv_sec = static_cast<long>(timeouts.connect_sec);
+                long tv_usec = static_cast<long>((timeouts.connect_sec - tv_sec) * 1e6);
                 struct timeval tv { tv_sec, tv_usec };
-                int sel = select(static_cast<int>(fd) + 1, nullptr, &wset, nullptr, &tv);
+
+                int sel;
+#ifdef _WIN32
+                sel = select(static_cast<int>(fd) + 1,
+                             nullptr, &wset, nullptr, &tv);
+#else
+                do {
+                    sel = select(static_cast<int>(fd) + 1,
+                                 nullptr, &wset, nullptr, &tv);
+                } while (sel < 0 && errno == EINTR);
+#endif
                 if (sel > 0) {
                     token.throw_if_cancelled();
                     int err = 0;
@@ -721,7 +772,15 @@ public:
                             setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
 #endif
                         }
-                        SET_SOCK_TIMEOUT(fd, timeout_sec);
+                        SET_SOCK_TIMEOUT_RECV(fd, timeouts.read_sec);
+                        SET_SOCK_TIMEOUT_SEND(fd, timeouts.write_sec);
+
+#if defined(__APPLE__)
+                        int nosigpipe = 1;
+                        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                                   &nosigpipe, sizeof(nosigpipe));
+#endif
+
                         fd_ = fd;
                         freeaddrinfo(res);
                         return;
@@ -765,11 +824,15 @@ public:
     void send_all(const std::string& data) {
         size_t sent = 0;
         while (sent < data.size()) {
-            int n = ::send(fd_, data.data() + sent, static_cast<int>(data.size() - sent),
-#ifdef _WIN32
-                           0
+            int n = ::send(fd_, data.data() + sent,
+                           static_cast<int>(data.size() - sent),
+#if defined(_WIN32)
+                           0          
+#elif defined(__APPLE__)
+                           0          
+                                      
 #else
-                           MSG_NOSIGNAL
+                           MSG_NOSIGNAL 
 #endif
             );
             if (n <= 0) throw TransportError("TCP send failed", TransportErrorKind::Local);
@@ -811,6 +874,9 @@ private:
     RAW_SOCKET fd_;
 };
 
+//************************************************************************************************
+//************************************    UDP     ************************************************
+//************************************************************************************************
 
 class UdpSocket {
 public:
@@ -834,7 +900,7 @@ public:
         return *this;
     }
 
-    void create_client(const std::string& host, uint16_t port, double timeout_sec, bool broadcast) {
+    void create_client(const std::string& host, uint16_t port, double recv_timeout_sec, bool broadcast, double send_timeout_sec= 5.0) {
         close();
 #ifdef _WIN32
         static struct WsaInit { WsaInit() { WSADATA w; WSAStartup(MAKEWORD(2,2), &w); } } wsa_init;
@@ -854,7 +920,10 @@ public:
         memcpy(&addr_, res->ai_addr, res->ai_addrlen);
         addrlen_ = static_cast<socklen_t>(res->ai_addrlen);
         freeaddrinfo(res);
-        SET_SOCK_TIMEOUT(fd_, timeout_sec);
+
+        SET_SOCK_TIMEOUT_RECV(fd_, recv_timeout_sec);
+        SET_SOCK_TIMEOUT_SEND(fd_, send_timeout_sec);
+
         if (broadcast) {
             int bc = 1;
             setsockopt(fd_, SOL_SOCKET, SO_BROADCAST,
@@ -886,7 +955,7 @@ public:
             close();
             throw TransportError("UDP bind failed on port " + std::to_string(port));
         }
-        SET_SOCK_TIMEOUT(fd_, timeout_sec);
+        SET_SOCK_TIMEOUT_RECV(fd_, timeout_sec);
     }
 
     void sendto(const std::string& data) {
@@ -928,6 +997,9 @@ private:
     socklen_t addrlen_ = 0;
 };
 
+//************************************************************************************************
+//************************************    HTTP    ************************************************
+//************************************************************************************************
 
 inline std::string base64_encode(const std::string& src) {
     static const char T[] =
@@ -990,6 +1062,8 @@ struct RequestOptions {
     
     double timeout_sec   = 0.0;
     TransportTimeouts  timeouts; 
+
+    size_t expect_continue_threshold = 0;
     
     std::optional<TlsPolicy> tls_policy;
     
@@ -1009,6 +1083,10 @@ struct RequestOptions {
     bool forward_auth_on_redirect = false;
 };
 
+
+//************************************************************************************************
+//*********************************    HTTP CLIENT    ********************************************
+//************************************************************************************************
 
 class HttpClient {
     public:
@@ -1083,6 +1161,11 @@ class HttpClient {
             uint16_t    port = 80;
             std::string path = "/";
         };
+
+        struct DnsEntry {
+            tcp::resolver::results_type endpoints;
+            std::chrono::steady_clock::time_point expires_at;
+        };        
     
         static ParsedUrl parse_url(const std::string& url) {
             ParsedUrl p;
@@ -1296,9 +1379,32 @@ class HttpClient {
                                       const RequestOptions& opts,
                                       const TransportTimeouts& to,
                                       const TlsPolicy& tp) {
-            asio::io_context ioc;
-            auto endpoints = tcp::resolver(ioc).resolve(pu.host,
-                                                        std::to_string(pu.port));
+            //asio::io_context ioc;
+            //auto endpoints = tcp::resolver(ioc).resolve(pu.host,
+            //                                            std::to_string(pu.port));
+
+            tcp::resolver::results_type endpoints;
+            std::string cache_key = pu.host + ":" + std::to_string(pu.port);
+            bool need_resolve = true;
+            {
+                std::lock_guard<std::mutex> lk(dns_cache_mtx_);
+                auto it = dns_cache_.find(cache_key);
+                if (it != dns_cache_.end() &&
+                    std::chrono::steady_clock::now() < it->second.expires_at) {
+                    endpoints = it->second.endpoints;
+                    need_resolve = false;
+                }
+            }
+            if (need_resolve) {
+                auto new_endpoints = tcp::resolver(ioc_).resolve(pu.host,
+                                                    std::to_string(pu.port));
+                std::lock_guard<std::mutex> lk(dns_cache_mtx_);
+                dns_cache_[cache_key] = DnsEntry{
+                    new_endpoints,
+                    std::chrono::steady_clock::now() + dns_ttl_seconds
+                };
+                endpoints = new_endpoints;
+            }
                                                         
             http::request<http::string_body> req;
             req.method(http::string_to_verb(method));
@@ -1382,15 +1488,25 @@ class HttpClient {
                         boost::system::error_code ec;
                         beast::get_lowest_layer(stream).expires_after(to.body_dur());
                         http::read(stream, fb, parser, ec);
-                        if (ec && ec != http::error::need_buffer) break;
+                        if (ec && ec != http::error::need_buffer) {
+                            if (ec == asio::error::timed_out)
+                                throw TransportError::timeout(pu.host);
+                            throw TransportError(ec.message(),
+                                                 TransportErrorKind::Local,
+                                                 ec.value());
+                        }
                         size_t used = buf.size() - parser.get().body().size;
-                        resp.bytes_received += used;
-                        bool cont = true;
-                        if (opts.body_chunk_cb)
-                            cont = opts.body_chunk_cb(buf.data(), used);
-                        if (cont && opts.hooks && opts.hooks->on_body_chunk)
-                            cont = opts.hooks->on_body_chunk(buf.data(), used);
-                        if (!cont) throw TransportError::cancelled();
+                        if (used > 0) {
+                            resp.bytes_received += used;
+                            bool cont = true;
+                            if (opts.body_chunk_cb)
+                                cont = opts.body_chunk_cb(buf.data(), used);
+                            if (cont && opts.hooks && opts.hooks->on_body_chunk)
+                                cont = opts.hooks->on_body_chunk(buf.data(), used);
+                            if (!cont) throw TransportError(
+                                "body stream aborted by callback",
+                                TransportErrorKind::Cancelled);
+                        }
                     }
                     return resp;
                 } else {
@@ -1418,13 +1534,14 @@ class HttpClient {
             try {
                 if (pu.tls) {
                     ssl::context ctx = create_ssl_context(tp);
-                    beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
+                    beast::ssl_stream<beast::tcp_stream> stream(ioc_, ctx);
                     if (tp.verify_hostname)
                         SSL_set_tlsext_host_name(stream.native_handle(),
                                                  pu.host.c_str());
                     beast::get_lowest_layer(stream).expires_after(to.connect_dur());
                     opts.cancel_token.throw_if_cancelled();
                     beast::get_lowest_layer(stream).connect(endpoints);
+                    beast::get_lowest_layer(stream).socket().set_option(tcp::no_delay(true));
                     beast::get_lowest_layer(stream).expires_after(to.tls_dur());
                     stream.handshake(ssl::stream_base::client);
                     
@@ -1437,16 +1554,32 @@ class HttpClient {
                     if (proto && proto_len == 2 &&
                         memcmp(proto, "h2", 2) == 0) resp.http2 = true;
                     boost::system::error_code ec;
+                    std::string conn_resp = resp.header("Connection");
+                    for (char& c : conn_resp) c = static_cast<char>(std::tolower((unsigned char)c));
+                    if (conn_resp != "close") {
+                        struct linger lg{1, 0};
+                        setsockopt(beast::get_lowest_layer(stream).socket().native_handle(),
+                                   SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+                    }
+                    beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ec);
                     stream.shutdown(ec);
                     return resp;
                 } else {
-                    beast::tcp_stream stream(ioc);
+                    beast::tcp_stream stream(ioc_);
                     stream.expires_after(to.connect_dur());
                     opts.cancel_token.throw_if_cancelled();
                     stream.connect(endpoints);
+                    stream.socket().set_option(tcp::no_delay(true));
                     http::write(stream, req);
                     auto resp = read_response(stream);
                     boost::system::error_code ec;
+                    std::string conn_resp = resp.header("Connection");
+                    for (char& c : conn_resp) c = static_cast<char>(std::tolower((unsigned char)c));
+                    if (conn_resp != "close") {
+                        struct linger lg{1, 0};
+                        setsockopt(stream.socket().native_handle(), SOL_SOCKET,
+                                   SO_LINGER, &lg, sizeof(lg));
+                    }
                     stream.socket().shutdown(tcp::socket::shutdown_both, ec);
                     return resp;
                 }
@@ -1467,8 +1600,15 @@ class HttpClient {
         TransportTimeouts   timeouts_;
         int                 max_redirects_;
         std::shared_ptr<CookieJar> cookie_jar_;
+        mutable std::mutex                          dns_cache_mtx_;
+        std::unordered_map<std::string, DnsEntry>   dns_cache_;
+        mutable asio::io_context                    ioc_;
+        static constexpr auto dns_ttl_seconds = std::chrono::seconds(300);
 };
 
+//************************************************************************************************
+//********************************    HTTP SESSION    ********************************************
+//************************************************************************************************
 
 
 class HttpSession {
@@ -1665,6 +1805,14 @@ class HttpSession {
                 req.set(http::field::cookie, cookie_hdr);
     
             req.set(http::field::connection, "keep-alive");
+
+            const bool use_expect_continue =
+                opts.expect_continue_threshold > 0 &&
+                (verb == http::verb::post || verb == http::verb::put ||
+                 verb == http::verb::patch) &&
+                body.size() >= opts.expect_continue_threshold;
+            if (use_expect_continue)
+                req.set(http::field::expect, "100-continue");
             
             if (opts.upload_chunk_cb) {
                 std::string upload;
@@ -1732,7 +1880,7 @@ class HttpSession {
                         lk.unlock(); reconnect(); lk.lock();
                     }
     
-                    HttpResponse resp = send_recv_locked(req, opts, eff_to);
+                    HttpResponse resp = send_recv_locked(req, opts, eff_to, use_expect_continue);
                     ++request_count_;
                     
                     for (const auto& sc : resp.header_all("Set-Cookie"))
@@ -1756,7 +1904,19 @@ class HttpSession {
                         std::string loc = resp.location();
                         if (!loc.empty() && loc[0] == '/') {
                             RequestOptions redir_opts = opts;
-                            redir_opts.headers.clear();
+
+                            redir_opts.headers.erase(
+                                std::remove_if(
+                                    redir_opts.headers.begin(),
+                                    redir_opts.headers.end(),
+                                    [](const std::pair<std::string,std::string>& h) {
+                                        std::string k = h.first;
+                                        for (char& c : k)
+                                            c = static_cast<char>(
+                                                std::tolower((unsigned char)c));
+                                        return k == "authorization";
+                                    }),
+                                redir_opts.headers.end());
                             return do_request(
                                 resp.status == 303 ? http::verb::get : verb,
                                 loc, content_type,
@@ -1806,7 +1966,8 @@ class HttpSession {
         
         HttpResponse send_recv_locked(const http::request<http::string_body>& req,
                                                         const RequestOptions& opts,
-                                                        const TransportTimeouts& to) {
+                                                        const TransportTimeouts& to,
+                                                        bool use_expect_continue = false) {
             auto do_io = [&](auto& stream) -> HttpResponse {
                 opts.cancel_token.throw_if_cancelled();
                 beast::flat_buffer fb;
@@ -1840,20 +2001,70 @@ class HttpSession {
                         boost::system::error_code ec;
                         beast::get_lowest_layer(stream).expires_after(to.body_dur());
                         http::read(stream, fb, parser, ec);
-                        if (ec && ec != http::error::need_buffer) break;
+                        if (ec && ec != http::error::need_buffer) {
+                            if (ec == asio::error::timed_out)
+                                throw TransportError::timeout(host_);
+                            throw TransportError(ec.message(),
+                                                 TransportErrorKind::Local,
+                                                 ec.value());
+                        }
                         size_t used = buf.size() - parser.get().body().size;
-                        resp.bytes_received += used;
-                        bool cont = true;
-                        if (opts.body_chunk_cb)
-                            cont = opts.body_chunk_cb(buf.data(), used);
-                        if (cont && opts.hooks && opts.hooks->on_body_chunk)
-                            cont = opts.hooks->on_body_chunk(buf.data(), used);
-                        if (!cont) throw TransportError::cancelled();
+                        if (used > 0) {
+                            resp.bytes_received += used;
+                            bool cont = true;
+                            if (opts.body_chunk_cb)
+                                cont = opts.body_chunk_cb(buf.data(), used);
+                            if (cont && opts.hooks && opts.hooks->on_body_chunk)
+                                cont = opts.hooks->on_body_chunk(buf.data(), used);
+                            if (!cont) throw TransportError(
+                                "body stream aborted by callback",
+                                TransportErrorKind::Cancelled);
+                        }
                     }
                     return resp;
                 } else {
-                    beast::get_lowest_layer(stream).expires_after(to.write_dur());
-                    http::write(stream, req);
+                    if (use_expect_continue && !req.body().empty()) {
+                        http::serializer<true, http::string_body> sr(req);
+
+                        beast::get_lowest_layer(stream).expires_after(to.write_dur());
+                        boost::system::error_code ech;
+                        http::write_header(stream, sr, ech);
+                        if (ech) throw TransportError(ech.message(),
+                                                      TransportErrorKind::Local,
+                                                      ech.value());
+                                                      
+                        beast::get_lowest_layer(stream).expires_after(to.read_dur());
+                        http::response<http::dynamic_body> interim;
+                        boost::system::error_code ec100;
+                        http::read(stream, fb, interim, ec100);
+
+                        if (!ec100 && interim.result_int() == 100) {
+                            beast::get_lowest_layer(stream).expires_after(
+                                to.write_dur());
+                            boost::system::error_code ecb;
+                            
+                            http::write(stream, sr, ecb);
+                            if (ecb) throw TransportError(ecb.message(),
+                                                          TransportErrorKind::Local,
+                                                          ecb.value());
+                        } else if (!ec100) {
+                            HttpResponse resp;
+                            resp.status = static_cast<int>(interim.result_int());
+                            resp.reason = std::string(interim.reason());
+                            resp.body   = beast::buffers_to_string(
+                                              interim.body().data());
+                            for (const auto& f : interim)
+                                resp.headers.emplace_back(
+                                    std::string(f.name_string()),
+                                    std::string(f.value()));
+                            return resp;
+                        }
+                        
+                    } else {
+                        beast::get_lowest_layer(stream).expires_after(to.write_dur());
+                        http::write(stream, req);
+                    }
+
                     http::response<http::dynamic_body> res;
                     beast::get_lowest_layer(stream).expires_after(to.read_dur());
                     http::read(stream, fb, res);
@@ -1905,6 +2116,11 @@ class HttpSession {
 };
 
 
+//************************************************************************************************
+//************************************    SMTP    ************************************************
+//************************************************************************************************
+
+
 enum class SmtpAuth : uint8_t {
     None        = 0,
     Plain       = 1,  
@@ -1927,10 +2143,10 @@ struct OAuth2Config {
     }
 
     void set_refresh_provider(const std::string& token_endpoint) {
-        token_provider = [cid   = client_id,
-                          csec  = client_secret,
-                          rtok  = refresh_token,
-                          ep    = token_endpoint]() -> std::string {
+        token_provider = [cid  = client_id,
+                          csec = client_secret,
+                          rtok = refresh_token,
+                          ep   = token_endpoint]() -> std::string {
             HttpClient hc;
             auto r = hc.post(
                 ep,
@@ -1941,9 +2157,11 @@ struct OAuth2Config {
                 "application/x-www-form-urlencoded",
                 RequestOptions{});
             if (!r.ok()) return {};
+            
             auto pos = r.body.find("\"access_token\"");
             if (pos == std::string::npos) return {};
-            pos = r.body.find('"', pos + 14);
+            
+            pos = r.body.find('"', pos + 14);  
             if (pos == std::string::npos) return {};
             auto end = r.body.find('"', pos + 1);
             if (end == std::string::npos) return {};
@@ -2180,13 +2398,13 @@ class SmtpClient {
                    SmtpAuth           auth_mech          = SmtpAuth::Login,
                    OAuth2Config       oauth2             = {},
                    int                max_send_attempts  = 3,
-                   double             timeout_sec        = 30.0)
+                   SmtpTimeouts       timeouts           = {})
             : host_(host), port_(port), client_name_(client_name)
             , username_(username), password_(password)
             , mode_(mode), auth_mech_(auth_mech)
             , oauth2_(std::move(oauth2))
             , max_send_attempts_(max_send_attempts)
-            , timeout_sec_(timeout_sec)
+            , timeouts_(std::move(timeouts))
             , ioc_()
             , ssl_ctx_(create_ssl_context([](){
                   TlsPolicy p;
@@ -2197,17 +2415,36 @@ class SmtpClient {
               }())) {
             //connect_and_auth();
         }
-
-    ~SmtpClient() { disconnect(); }
+    
+    ~SmtpClient() {
+        boost::system::error_code ec;
+        if (plain_socket_ && plain_socket_->is_open()) {
+            plain_socket_->cancel(ec);
+            plain_socket_->shutdown(tcp::socket::shutdown_both, ec);
+            plain_socket_->close(ec);
+            plain_socket_.reset();
+        }
+        if (tls_stream_) {
+            auto& sock = tls_stream_->lowest_layer(); 
+            sock.cancel(ec);
+            sock.shutdown(tcp::socket::shutdown_both, ec);
+            sock.close(ec);
+            tls_stream_.reset();
+        }
+    }
 
     SmtpClient(const SmtpClient&) = delete;
     SmtpClient& operator=(const SmtpClient&) = delete;
     SmtpClient(SmtpClient&& other) noexcept = delete;
     SmtpClient& operator=(SmtpClient&& other) noexcept = delete;
 
-    SmtpSendResult send(const SmtpMessage& msg) {
+    SmtpSendResult send(const SmtpMessage& msg, bool close_after_send= false) {
         std::lock_guard<std::mutex> lk(send_mtx_);
         SmtpSendResult result;
+
+        if ((tls_stream_ || plain_socket_) && !is_connected()) {
+            disconnect();
+        }
 
         if (!tls_stream_ && !plain_socket_) {
                 try {
@@ -2224,8 +2461,10 @@ class SmtpClient {
         for (int attempt = 0; attempt < max_send_attempts_; ++attempt) {
             result.attempts = attempt + 1;
             try {
+                needs_rset_ = true;
                 result = send_to_stream(msg);
             } catch (const std::exception&) {
+                needs_rset_ = false;
                 try {
                     connect_and_auth();
                     result = send_to_stream(msg);
@@ -2236,8 +2475,12 @@ class SmtpClient {
                     result.error_class = SmtpErrorClass::Transient;
                 }
             }
-
-            if (result.ok)                       return result; 
+            
+            if (result.ok) {
+                needs_rset_ = false;
+                if (close_after_send) disconnect();
+                return result;
+            }
             if (result.is_permanent_failure())   return result; 
             if (!result.should_retry())          return result; 
             
@@ -2280,9 +2523,14 @@ private:
             tls_stream_.emplace(ioc_, ssl_ctx_);
             SSL_set_tlsext_host_name(tls_stream_->native_handle(), host_.c_str());
             asio::connect(tls_stream_->next_layer(), endpoints);
+            tls_stream_->next_layer().set_option(boost::asio::socket_base::keep_alive(true));
             set_socket_timeout(tls_stream_->next_layer().native_handle(),
-                               timeout_sec_);
+                               timeouts_.connect_sec);
+
+            SET_SOCK_TIMEOUT(tls_stream_->next_layer().native_handle(), timeouts_.tls_sec);
             tls_stream_->handshake(ssl::stream_base::client);
+            SET_SOCK_TIMEOUT(tls_stream_->next_layer().native_handle(), timeouts_.command_sec);
+
             drain_banner(*tls_stream_);
             caps_ = do_ehlo(*tls_stream_);
             do_auth(*tls_stream_);
@@ -2290,8 +2538,10 @@ private:
         } else if (mode_ == SmtpMode::StartTls) {
             plain_socket_.emplace(ioc_);
             asio::connect(*plain_socket_, endpoints);
-            set_socket_timeout(plain_socket_->native_handle(), timeout_sec_);
+            plain_socket_->set_option(boost::asio::socket_base::keep_alive(true));
+            SET_SOCK_TIMEOUT(plain_socket_->native_handle(), timeouts_.banner_sec);
             drain_banner(*plain_socket_);
+            SET_SOCK_TIMEOUT(plain_socket_->native_handle(), timeouts_.command_sec);
 
             SmtpCapabilities pre_caps = do_ehlo(*plain_socket_);
             if (!pre_caps.starttls)
@@ -2307,7 +2557,11 @@ private:
             tls_stream_.emplace(std::move(*plain_socket_), ssl_ctx_);
             plain_socket_.reset();
             SSL_set_tlsext_host_name(tls_stream_->native_handle(), host_.c_str());
+            SET_SOCK_TIMEOUT(tls_stream_->next_layer().native_handle(),
+                             timeouts_.tls_sec);
             tls_stream_->handshake(ssl::stream_base::client);
+            SET_SOCK_TIMEOUT(tls_stream_->next_layer().native_handle(),
+                             timeouts_.command_sec);
             
             caps_ = do_ehlo(*tls_stream_);
             do_auth(*tls_stream_);
@@ -2315,8 +2569,10 @@ private:
         } else {
             plain_socket_.emplace(ioc_);
             asio::connect(*plain_socket_, endpoints);
-            set_socket_timeout(plain_socket_->native_handle(), timeout_sec_);
+            plain_socket_->set_option(boost::asio::socket_base::keep_alive(true));
+            SET_SOCK_TIMEOUT(plain_socket_->native_handle(), timeouts_.banner_sec);
             drain_banner(*plain_socket_);
+            SET_SOCK_TIMEOUT(plain_socket_->native_handle(), timeouts_.command_sec);
             caps_ = do_ehlo(*plain_socket_);
             do_auth(*plain_socket_);
         }
@@ -2490,14 +2746,12 @@ private:
 
     SmtpSendResult send_to_stream(const SmtpMessage& msg) {
         
-        {
+        if (needs_rset_) {
             auto r = command("RSET\r\n");
             if (r.code < 0) {
                 connect_and_auth();
-                r = command("RSET\r\n");
-                if (r.code < 0)
-                    return make_result(r.code, r.text);
             }
+            needs_rset_ = false;
         }
         
         std::string raw_msg = msg.build();
@@ -2551,18 +2805,33 @@ private:
                 asio::write(*plain_socket_, asio::buffer(batch), wec);
             if (wec) return make_result(-1, wec.message());
             
-            auto mf_r = command(""); 
-            if (mf_r.code != 250) return make_result(mf_r.code, mf_r.text);
+            const size_t rcpt_count = msg.to().size() + msg.cc().size()
+                                    + msg.bcc().size();
+                                    
+            const size_t total_expected = 1 + rcpt_count + 1;
 
-            size_t rcpt_count = msg.to().size() + msg.cc().size()
-                              + msg.bcc().size();
-            for (size_t i = 0; i < rcpt_count; ++i) {
-                auto rr = command("");
-                if (rr.code != 250 && rr.code != 251)
-                    return make_result(rr.code, rr.text);
+            std::vector<SmtpResponse> responses;
+            responses.reserve(total_expected);
+            for (size_t i = 0; i < total_expected; ++i)
+                responses.push_back(command(""));
+                
+            if (responses[0].code != 250)
+                return make_result(responses[0].code, responses[0].text);
+                
+            SmtpSendResult rcpt_err;
+            bool had_rcpt_error = false;
+            for (size_t i = 1; i <= rcpt_count; ++i) {
+                if (!had_rcpt_error &&
+                    responses[i].code != 250 && responses[i].code != 251) {
+                    rcpt_err = make_result(responses[i].code, responses[i].text);
+                    had_rcpt_error = true;                    
+                }
             }
-            auto data_r = command("");
-            if (data_r.code != 354) return make_result(data_r.code, data_r.text);
+            if (had_rcpt_error) return rcpt_err;
+            
+            const auto& data_r = responses[rcpt_count + 1];
+            if (data_r.code != 354)
+                return make_result(data_r.code, data_r.text);
 
         } else {
             auto mf_r = command(mail_from);
@@ -2599,6 +2868,14 @@ private:
             if (data_r.code != 354) return make_result(data_r.code, data_r.text);
         }
         
+        auto apply_timeout = [&](double secs) {
+            if (tls_stream_)
+                SET_SOCK_TIMEOUT(tls_stream_->next_layer().native_handle(), secs);
+            else if (plain_socket_)
+                SET_SOCK_TIMEOUT(plain_socket_->native_handle(), secs);
+        };
+        apply_timeout(timeouts_.data_sec);
+
         boost::system::error_code ec;
         if (tls_stream_)
             asio::write(*tls_stream_, asio::buffer(escaped), ec);
@@ -2606,7 +2883,9 @@ private:
             asio::write(*plain_socket_, asio::buffer(escaped), ec);
         if (ec) return make_result(-1, ec.message());
         
+        apply_timeout(timeouts_.response_sec);
         auto final_r = command("");
+
         if (final_r.code != 250)
             return make_result(final_r.code, final_r.text);
 
@@ -2615,6 +2894,7 @@ private:
         ok.smtp_code  = 250;
         ok.smtp_message = final_r.text;
         ok.error_class  = SmtpErrorClass::None;
+        needs_rset_ = false;
         return ok;
     }
     
@@ -2631,6 +2911,19 @@ private:
         SET_SOCK_TIMEOUT(fd, secs);
     }
 
+    bool is_connected() const noexcept {
+        try {
+            if (tls_stream_) {
+                return const_cast<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&>(*tls_stream_)
+                    .lowest_layer().is_open();
+            }
+            if (plain_socket_) {
+                return plain_socket_->is_open();
+            }
+        } catch (...) {}
+        return false;
+    }
+
     std::string         host_;
     uint16_t            port_;
     std::string         client_name_;
@@ -2639,13 +2932,14 @@ private:
     SmtpMode            mode_;
     SmtpAuth            auth_mech_;
     OAuth2Config        oauth2_;
-    SmtpCapabilities    caps_;        
+    SmtpCapabilities    caps_;  
+    bool                needs_rset_= false;        
     int                 max_send_attempts_;
-    double              timeout_sec_;
+    SmtpTimeouts        timeouts_;
+    std::optional<tcp::socket>  plain_socket_;
+    std::optional<ssl::stream<tcp::socket>> tls_stream_;
     asio::io_context    ioc_;
     ssl::context        ssl_ctx_;
-    std::optional<tcp::socket>              plain_socket_;
-    std::optional<ssl::stream<tcp::socket>> tls_stream_;
     mutable std::mutex send_mtx_;
 };
 
