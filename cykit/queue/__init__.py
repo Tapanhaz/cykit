@@ -1,1 +1,1 @@
-from cykit.spsc_queue.spsc_queue import *
+from cykit.queue.queue import *
