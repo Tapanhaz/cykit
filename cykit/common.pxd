@@ -41,6 +41,8 @@ cdef extern from "Python.h":
     void PyErr_Clear()
     PyObject* PyErr_Occurred()
     void PyErr_SetInterrupt()
+    PyObject* PyExc_RuntimeWarning
+    int PyErr_WarnEx(PyObject* category, const char* message, Py_ssize_t stacklevel)
 
     int PyLong_Check(PyObject* obj)     
     int PyLong_CheckExact(PyObject* obj) 
@@ -123,6 +125,41 @@ cdef extern from *:
     thread make_thread[F, A](F f, A a) noexcept nogil
 
 
+cdef extern from * nogil:
+    """
+    #if defined(_MSC_VER)
+        #include <immintrin.h>
+        static __forceinline void cpu_pause(void) {
+            _mm_pause();
+        }
+
+    #elif defined(__i386__) || defined(__x86_64__)
+        #include <immintrin.h>
+        static __inline__ void cpu_pause(void) {
+            __builtin_ia32_pause();
+        }
+
+    #elif defined(__aarch64__) || defined(__arm__)
+        static __inline__ void cpu_pause(void) {
+            __asm__ __volatile__("yield");
+        }
+
+    #else
+        static __inline__ void cpu_pause(void) {
+            __asm__ __volatile__("" ::: "memory");
+        }
+    #endif
+    """
+    void cpu_pause() noexcept
+
+
+cdef extern from *:
+    """
+    static inline int builtin_ctzll(unsigned long long x) {
+        return __builtin_ctzll(x);
+    }
+    """
+    int builtin_ctzll(unsigned long long x) noexcept nogil    
 
 
 cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
