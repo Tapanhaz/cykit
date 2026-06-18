@@ -1,5 +1,6 @@
 
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyd
 *.so
@@ -12,7 +13,13 @@ dist/
 *.egg-info/
 
 .vscode/
+.idea/
+
+.benchmarks/
+
+.log
+
+tests/ 
 
 cykit/cylogger/build/
 
-!cykit/cylogger/spdlog_logger.cppexamples/cylogger/test.log
