@@ -922,6 +922,22 @@ private:
 
 // ==============================================================================================================
 
+void enable_internal_logger(const std::string& name, spdlog::level::level_enum level, const std::string& pattern) {
+    auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+    sink->set_level(level);
+    sink->set_pattern(pattern);
+    auto logger = std::make_shared<spdlog::logger>(name, sink);
+    logger->set_level(level);
+    spdlog::register_logger(logger); 
+}
+
+void disable_internal_logger(const std::string& name) {
+    spdlog::drop(name);              
+}
+
+
+// ==============================================================================================================
+
 inline void registry_set_default(std::shared_ptr<spdlog::logger> logger) {
     LoggerRegistry::set_default(logger);
 }
@@ -1139,6 +1155,7 @@ do { \
     } while(0)
 
 // ==============================================================================================================
+
 
 
 #define TRACE(fmt, ...)\
@@ -1377,4 +1394,5 @@ do { \
 
 
 // ==============================================================================================================
+
     
