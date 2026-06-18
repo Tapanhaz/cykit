@@ -8,6 +8,10 @@ from libcpp.vector cimport vector
 from libcpp.set cimport set as cset
 from libcpp.memory cimport shared_ptr
 from libc.stdint cimport uint8_t, uint16_t
+from libcpp.optional cimport optional
+
+
+ctypedef int none "None"
 
 cdef extern from *:
     """
@@ -26,7 +30,7 @@ cdef extern from *:
 
 
 cdef extern from "base_transport.hpp" namespace "transport" nogil:
-    cdef enum TransportErrorKind:
+    cdef enum class TransportErrorKind "transport::TransportErrorKind":
         none      "transport::TransportErrorKind::None"
         Timeout   "transport::TransportErrorKind::Timeout"
         Dns       "transport::TransportErrorKind::Dns"
@@ -37,6 +41,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         Remote    "transport::TransportErrorKind::Remote"
         Cancelled "transport::TransportErrorKind::Cancelled"
         Local     "transport::TransportErrorKind::Local"
+
 
     cdef cppclass TransportError:
         TransportErrorKind kind
@@ -131,7 +136,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         TlsPolicy insecure()  except +
 
 
-    cdef enum IdempotencyClass:
+    cdef enum class IdempotencyClass "transport::IdempotencyClass":
         Idempotent  "transport::IdempotencyClass::Idempotent"
         NonIdempotent "transport::IdempotencyClass::NonIdempotent"
         Force       "transport::IdempotencyClass::Force"
@@ -160,6 +165,36 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         double max_age_sec
 
         KeepAliveConfig() except +
+    
+    cdef cppclass TransportTimeouts:
+        double connect_sec
+        double tls_sec
+        double write_sec
+        double read_sec
+        double body_sec
+        double total_sec
+        double pool_idle_sec
+
+        TransportTimeouts() except +
+        TransportTimeouts(double all) except +
+    
+    cdef cppclass TcpTimeouts:
+        double connect_sec
+        double read_sec
+        double write_sec
+        TcpTimeouts() except +
+        TcpTimeouts(double all) except +
+
+    cdef cppclass SmtpTimeouts:
+        double connect_sec
+        double tls_sec
+        double banner_sec
+        double command_sec
+        double data_sec
+        double response_sec
+        SmtpTimeouts() except +
+        SmtpTimeouts(double all) except +
+
 
     cdef cppclass TransportHooks:
         TransportHooks() except +
@@ -181,14 +216,21 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         string location() except +
 
     cdef cppclass RequestOptions:
-        HeaderList  headers
-        HeaderList  extra_cookies
-        string      user_agent
-        double      timeout_sec
-        CancelToken cancel_token
-        int         max_redirects
-        cbool        forward_auth_on_redirect
-
+        HeaderList               headers
+        HeaderList               extra_cookies
+        string                   user_agent
+        TransportTimeouts        timeouts
+        size_t                   expect_continue_threshold
+        optional[TlsPolicy]      tls_policy
+        optional[RetryPolicy]    retry_policy
+        CancelToken              cancel_token
+        unsigned char[32]        _body_chunk_cb
+        unsigned char[32]        _upload_chunk_cb
+        size_t                   upload_chunk_size
+        optional[TransportHooks] hooks
+        int                      max_redirects
+        cbool                    forward_auth_on_redirect
+        
         RequestOptions() except +
 
 
@@ -200,7 +242,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
                    TransportHooks    hooks,
                    HeaderList        persistent_headers,
                    string            user_agent,
-                   double            timeout_sec,
+                   TransportTimeouts timeouts,
                    int               max_redirects,
                    shared_ptr[CookieJar] cookie_jar) except +
 
@@ -232,7 +274,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
 
         CookieJar&  cookie_jar() except +
         HeaderList& persistent_headers()  except +
-
+        
 
     cdef cppclass HttpSession:
         HttpSession(string           host,
@@ -242,7 +284,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
                     HeaderList       persistent_headers,
                     string           user_agent,
                     cbool             use_tls,
-                    double           timeout_sec,
+                    TransportTimeouts timeouts,
                     TlsPolicy        tls_policy,
                     RetryPolicy      retry_policy,
                     KeepAliveConfig  ka_cfg,
@@ -274,6 +316,8 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         void reconnect() except +
         void disconnect() except +
 
+        void force_close() noexcept
+
         CookieJar&  cookie_jar() except +
         HeaderList& persistent_headers() except +
 
@@ -282,7 +326,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         TcpSocket() except +
         void   connect(const string& host,
                        uint16_t      port,
-                       double        timeout_sec,
+                       TcpTimeouts   timeouts,
                        cbool          keepalive,
                        CancelToken   token) except +
         void   close() except +
@@ -297,12 +341,13 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
     cdef cppclass UdpSocket:
         UdpSocket() except +
         void create_client(const string& host,
-                           uint16_t      port,
-                           double        timeout_sec,
-                           cbool          broadcast) except +
+                           uint16_t port,
+                           double   recv_timeout_sec,
+                           cbool broadcast,
+                           double   send_timeout_sec) except +
         void create_server(uint16_t port,
-                           cbool     reuse_addr,
-                           double   timeout_sec) except +
+                           cbool reuse_addr,
+                           double timeout_sec) except +
         void sendto(const string& data) except +
         pair[string, sockaddr_storage] recvfrom(size_t max_size) except +
         void close() except +
@@ -316,24 +361,24 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         OAuth2Config() except +
         
         @staticmethod
-        string build_xoauth2_payload(const string& user,
-                                     const string& token) except +
+        string build_xoauth2_payload(const string& user, const string& token) except +
 
         void set_refresh_provider(const string& token_endpoint) except +
 
-    cdef enum SmtpAuth:
-        smtp_auth_none    "transport::SmtpAuth::None"
-        smtp_auth_plain   "transport::SmtpAuth::Plain"
+    cdef enum SmtpAuth "transport::SmtpAuth":
+        none    "transport::SmtpAuth::None"
+        Plain   "transport::SmtpAuth::Plain"
         Login   "transport::SmtpAuth::Login"
         XOAuth2 "transport::SmtpAuth::XOAuth2"
 
-    cdef enum SmtpMode:
-        smtp_mode_plain    "transport::SmtpMode::Plain"
+
+    cdef enum SmtpMode "transport::SmtpMode":
+        Plain    "transport::SmtpMode::Plain"
         StartTls "transport::SmtpMode::StartTls"
         Smtps    "transport::SmtpMode::Smtps"
 
-    cdef enum SmtpErrorClass:
-        smtp_error_none        "transport::SmtpErrorClass::None"
+    cdef enum SmtpErrorClass "transport::SmtpErrorClass":
+        none  "transport::SmtpErrorClass::None"
         Transient   "transport::SmtpErrorClass::Transient"
         Permanent   "transport::SmtpErrorClass::Permanent"
         ServiceDown "transport::SmtpErrorClass::ServiceDown"
@@ -361,7 +406,7 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
         cbool should_retry()
         cbool is_permanent_failure()
 
-
+    
     cdef cppclass SmtpMessage:
         SmtpMessage() except +
 
@@ -399,9 +444,9 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
                    SmtpAuth      auth_mech,
                    OAuth2Config  oauth2,
                    int           max_send_attempts,
-                   double        timeout_sec) except +
+                   SmtpTimeouts  timeouts) except +
 
-        SmtpSendResult send(const SmtpMessage& msg) except +
+        SmtpSendResult send(const SmtpMessage& msg, cbool close_after_send) except +
         cbool noop() except +
         cbool rset() except +
 
@@ -413,23 +458,30 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
 cdef inline TcpSocket* make_tcp_socket(
         string      host,
         uint16_t    port,
-        double      timeout_sec  = 30.0,
-        bint        keepalive    = True,
-        CancelToken cancel_token = CancelToken()
+        double      connect_timeout = 10.0,
+        double      read_timeout    = 30.0,
+        double      write_timeout   = 30.0,
+        bint        keepalive       = True,
+        CancelToken cancel_token    = CancelToken()
 ) except *:
     cdef TcpSocket* s = new TcpSocket()
-    s.connect(host, port, timeout_sec, keepalive, cancel_token)
+    cdef TcpTimeouts t
+    t.connect_sec = connect_timeout
+    t.read_sec    = read_timeout
+    t.write_sec   = write_timeout
+    s.connect(host, port, t, keepalive, cancel_token)
     return s
 
 
 cdef inline UdpSocket* make_udp_client(
         string   host,
         uint16_t port,
-        double   timeout_sec = 5.0,
-        bint     broadcast   = False
+        double   recv_timeout_sec = 5.0,
+        double   send_timeout_sec = 5.0,
+        bint     broadcast        = False
 ) except *:
     cdef UdpSocket* s = new UdpSocket()
-    s.create_client(host, port, timeout_sec, broadcast)
+    s.create_client(host, port, recv_timeout_sec, broadcast, send_timeout_sec)
     return s
 
 
@@ -510,9 +562,51 @@ cdef inline KeepAliveConfig _build_ka(
     return ka
 
 
+cdef inline TransportTimeouts _build_http_timeouts(
+        double connect_sec,
+        double tls_sec,
+        double write_sec,
+        double read_sec,
+        double body_sec,
+        double total_sec,
+        double pool_idle_sec
+) nogil:
+    cdef TransportTimeouts t
+    t.connect_sec = connect_sec
+    t.tls_sec     = tls_sec
+    t.write_sec   = write_sec
+    t.read_sec    = read_sec
+    t.body_sec    = body_sec
+    t.total_sec   = total_sec
+    t.pool_idle_sec = pool_idle_sec
+    return t
+
+cdef inline SmtpTimeouts _build_smtp_timeouts(
+        double connect_sec,
+        double tls_sec,
+        double banner_sec,
+        double command_sec,
+        double data_sec,
+        double response_sec
+) nogil:
+    cdef SmtpTimeouts t
+    t.connect_sec  = connect_sec
+    t.tls_sec      = tls_sec
+    t.banner_sec   = banner_sec
+    t.command_sec  = command_sec
+    t.data_sec     = data_sec
+    t.response_sec = response_sec
+    return t
+
 
 cdef inline HttpClient* make_http_client(
-        double           timeout_sec         = 30.0,
+        double           connect_timeout     = 10.0,
+        double           tls_timeout         = 10.0,
+        double           write_timeout       = 30.0,
+        double           read_timeout        = 30.0,
+        double           body_timeout        = 60.0,
+        double           total_timeout       = 0,
+        double           pool_idle_timeout   = 0,
         int              max_redirects       = 10,
         bint             verify_tls          = True,
         bint             verify_hostname     = True,
@@ -550,7 +644,9 @@ cdef inline HttpClient* make_http_client(
         TransportHooks(),
         persistent_headers,
         user_agent,
-        timeout_sec,
+        _build_http_timeouts(connect_timeout, tls_timeout,
+                        write_timeout, read_timeout, body_timeout,
+                        total_timeout, pool_idle_timeout),
         max_redirects,
         cookie_jar)
 
@@ -562,7 +658,13 @@ cdef inline HttpSession* make_http_session(
         string           base_path            = b"/",
         string           default_content_type = b"application/json",
         bint             use_tls              = True,
-        double           timeout_sec          = 30.0,
+        double           connect_timeout     = 10.0,
+        double           tls_timeout         = 10.0,
+        double           write_timeout       = 30.0,
+        double           read_timeout        = 30.0,
+        double           body_timeout        = 60.0,
+        double           total_timeout       = 0,
+        double           pool_idle_timeout   = 0,
         bint             verify_tls           = True,
         bint             verify_hostname      = True,
         string           ca_file              = b"",
@@ -591,7 +693,10 @@ cdef inline HttpSession* make_http_session(
 ) except *:
     return new HttpSession(
         host, port, base_path, default_content_type,
-        persistent_headers, user_agent, use_tls, timeout_sec,
+        persistent_headers, user_agent, use_tls, 
+        _build_http_timeouts(connect_timeout, tls_timeout,
+                        write_timeout, read_timeout, body_timeout,
+                        total_timeout, pool_idle_timeout),
         _build_tls(verify_tls, verify_hostname, ca_file, ca_path,
                    cert_file, key_file, key_password,
                    min_tls_version, allow_http2),
@@ -604,22 +709,38 @@ cdef inline HttpSession* make_http_session(
         cookie_jar)
 
 
+cdef inline const char* smtp_error_class_str(SmtpErrorClass ec) noexcept nogil:
+    if ec == SmtpErrorClass.none:
+        return b"None"
+    elif ec == SmtpErrorClass.Transient:
+        return b"Transient"
+    elif ec == SmtpErrorClass.Permanent:
+        return b"Permanent"
+    elif ec == SmtpErrorClass.ServiceDown:
+        return b"ServiceDown"
 
 cdef inline SmtpClient* make_smtp_client(
-        string      host,
-        uint16_t    port,
-        string      username          = b"",
-        string      password          = b"",
-        string      client_name       = b"localhost",
-        SmtpMode    mode              = SmtpMode.StartTls,
-        SmtpAuth    auth_mech         = SmtpAuth.Login,
-        OAuth2Config oauth2           = OAuth2Config(),
-        int         max_send_attempts = 3,
-        double      timeout_sec       = 30.0,
-) except *:
+        string       host,
+        uint16_t     port,
+        string       username            = b"",
+        string       password            = b"",
+        string       client_name         = b"localhost",
+        SmtpMode     mode                = SmtpMode.StartTls,
+        SmtpAuth     auth_mech           = SmtpAuth.Login,
+        OAuth2Config oauth2              = OAuth2Config(),
+        int          max_send_attempts   = 3,
+        double       connect_timeout     = 10.0,
+        double       tls_timeout         = 10.0,
+        double       banner_timeout      = 10.0,
+        double       command_timeout     = 30.0,
+        double       data_timeout        = 60.0,
+        double       response_timeout    = 30.0,
+) except + nogil:
     return new SmtpClient(host, port, client_name, username, password,
-                          mode, auth_mech, oauth2,
-                          max_send_attempts, timeout_sec)
+                          mode, auth_mech, oauth2, max_send_attempts,
+                          _build_smtp_timeouts(connect_timeout, tls_timeout,
+                                               banner_timeout, command_timeout,
+                                               data_timeout, response_timeout))
 
 
 cdef inline SmtpSendResult smtp_send(
@@ -635,7 +756,8 @@ cdef inline SmtpSendResult smtp_send(
         list        attachments = [],
         string      dsn_ret     = b"FULL",
         string      dsn_notify  = b"FAILURE,DELAY",
-        string      envid       = b""
+        string      envid       = b"",
+        bool        close_after_send = False
 ) except *:
     cdef SmtpMessage msg
     cdef string      addr
@@ -668,4 +790,4 @@ cdef inline SmtpSendResult smtp_send(
     if not envid.empty():
         msg.set_envid(envid)
 
-    return client[0].send(msg)
+    return client[0].send(msg, close_after_send)
