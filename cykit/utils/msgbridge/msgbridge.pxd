@@ -1,5 +1,5 @@
 from libc.stdint  cimport uint32_t, uint16_t
-from cykit.spsc_queue cimport SPSCQueue
+from cykit.queue cimport Queue
 from cykit.common cimport thread, atomic_bool, PyObject
 
 cdef extern from *:
@@ -104,7 +104,7 @@ ctypedef int (*sd_push_fn_t) (
 
 cdef class AsyncDispatcher:
     cdef:
-        SPSCQueue         _q
+        Queue       _q
         NotifyBridge _bridge
 
         ad_push_fn_t push
@@ -122,7 +122,7 @@ cdef class AsyncDispatcher:
 
 cdef class SyncDispatcher:
     cdef:
-        SPSCQueue _q 
+        Queue _q 
         NotifyBridge _bridge
 
         bint _detach
@@ -175,7 +175,7 @@ ctypedef int (*cc_commit_fn_t) (
 
 cdef class CyPipe:
     cdef:
-        SPSCQueue _q 
+        Queue _q 
 
         cc_push_fn_t   push
         cc_pop_fn_t    pop
@@ -230,7 +230,7 @@ cdef class CBufferView:
 
 cdef class AsyncQueue:
     cdef:
-        SPSCQueue _q
+        Queue _q
 
         object _loop
         object _callback 
