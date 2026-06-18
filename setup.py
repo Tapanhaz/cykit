@@ -10,7 +10,7 @@ from setuptools import setup, Extension, find_namespace_packages
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from cykit.build_config import config
+from cykit._build.config import config  # noqa E402
 
 if config.use_sys_boost:
     print("===> USE_SYS_BOOST: Skipping Boost vendoring; using system Boost headers")
@@ -31,8 +31,34 @@ class BuildExt(build_ext):
 
     def run(self):
         self.build_all_cmake_subprojects()
-        self.add_cmake_deps_to_extensions()
+        self._patch_extensions_with_openssl()
         super().run()
+
+    def _patch_extensions_with_openssl(self):
+        config._openssl_cache.clear()
+        for ext in self.extensions:
+            if "cylogger" not in ext.name:
+                continue
+
+            for d in config._get_openssl_include_dirs():
+                if d not in ext.include_dirs:
+                    ext.include_dirs.append(d)
+
+            for d in config._get_openssl_lib_dirs():
+                if d not in ext.library_dirs:
+                    ext.library_dirs.append(d)
+
+            if platform.system() == "Windows":
+                objs = config._get_openssl_extra_objects()
+                if objs:
+                    ext.extra_objects = list(getattr(ext, "extra_objects", [])) + [
+                        o for o in objs if o not in getattr(ext, "extra_objects", [])
+                    ]
+            else:
+                for name in config._get_openssl_link_names():
+                    if name not in ext.libraries:
+                        ext.libraries.append(name)
+            print(f"[OpenSSL] Patched extension: {ext.name}")
 
     def build_extension(self, ext):
         system = platform.system()
@@ -59,28 +85,16 @@ class BuildExt(build_ext):
                 print(f"Injecting rpath {rpath} → {ext.name}")
         super().build_extension(ext)
 
-    def add_cmake_deps_to_extensions(self):
-        for ext in self.extensions:
-            ext_source_dir = Path(ext.sources[0]).parent
-            cmake_build_dir = ext_source_dir / "build"
-
-            if not cmake_build_dir.exists():
-                continue
-
-            deps_dir = cmake_build_dir / "_deps"
-            if deps_dir.exists():
-                for dep_dir in deps_dir.iterdir():
-                    if dep_dir.is_dir():
-                        include_dir = dep_dir / "include"
-                        if include_dir.exists():
-                            ext.include_dirs.append(str(include_dir))
-                            print(f"Added {dep_dir.name} include to {ext.name}")
-
     def build_all_cmake_subprojects(self):
-        for cmake_file in Path(".").rglob("CMakeLists.txt"):
-            cmake_source_dir = cmake_file.parent
+        project_root = Path(__file__).resolve().parent
+        cmake_dirs = [
+            project_root / "cmake" / "spdlog",
+            project_root / "cmake" / "boost",
+            project_root / "cmake" / "openssl",
+        ]
 
-            if "build" in cmake_source_dir.parts:
+        for cmake_source_dir in cmake_dirs:
+            if not (cmake_source_dir / "CMakeLists.txt").exists():
                 continue
 
             if cmake_source_dir.name == "boost":
@@ -91,10 +105,13 @@ class BuildExt(build_ext):
                     continue
 
                 if not FORCE_BOOST_DOWNLOAD:
-                    boost_include = cmake_source_dir / "include"
+                    boost_include = (
+                        project_root / "cykit" / "_vendor" / "include" / "boost"
+                    )
                     if boost_include.exists() and any(boost_include.iterdir()):
                         print(
-                            f"===> Boost headers already present at {boost_include}, skipping download. Set FORCE_BOOST_DOWNLOAD to re-download."
+                            f"===> Boost headers already present at {boost_include}, "
+                            f"skipping. Set FORCE_BOOST_DOWNLOAD=1 to re-download."
                         )
                         continue
 
@@ -111,6 +128,9 @@ class BuildExt(build_ext):
             f"Building {cmake_source_dir.name} with CMake (using {num_jobs} cores)..."
         )
 
+        project_root = Path(__file__).resolve().parent
+        vendor_include_dir = str(project_root / "cykit" / "_vendor" / "include")
+
         cmake_args = [
             "cmake",
             str(cmake_source_dir),
@@ -120,6 +140,9 @@ class BuildExt(build_ext):
                 else "-DCMAKE_BUILD_TYPE=Release"
             ),
         ]
+
+        if cmake_source_dir.name in ("spdlog", "boost"):
+            cmake_args.append(f"-DVENDOR_INCLUDE_DIR={vendor_include_dir}")
 
         if platform.system() == "Windows":
             try:
@@ -159,7 +182,8 @@ class BuildExt(build_ext):
             if cxx:
                 cmake_args.append(f"-DCMAKE_CXX_COMPILER={cxx}")
 
-            cmake_args.append("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
+            if cmake_source_dir.name != "openssl":
+                cmake_args.append("-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
 
         build_args = [
             "cmake",
@@ -206,7 +230,7 @@ class BuildExt(build_ext):
                 dest_source.chmod(lib_file.stat().st_mode)
                 print(f"Copied {lib_file.name} to {dest_source}")
 
-                rel_path = cmake_source_dir.relative_to(Path.cwd())
+                rel_path = cmake_source_dir.relative_to(project_root)
                 build_lib = Path(self.build_lib) / rel_path
                 build_lib.mkdir(parents=True, exist_ok=True)
                 dest_build = build_lib / lib_file.name
@@ -227,7 +251,7 @@ class BuildExt(build_ext):
                     dest_source.write_bytes(lib_file.read_bytes())
                     print(f"Copied {lib_file.name} to {dest_source}")
 
-                    rel_path = cmake_source_dir.relative_to(Path.cwd())
+                    rel_path = cmake_source_dir.relative_to(project_root)
                     build_lib = Path(self.build_lib) / rel_path
                     build_lib.mkdir(parents=True, exist_ok=True)
                     dest_build = build_lib / lib_file.name
@@ -253,7 +277,7 @@ class BuildExt(build_ext):
                     dest_source.chmod(lib_file.stat().st_mode)
                     print(f"Copied dylib variant: {lib_file.name} to {dest_source}")
 
-                    rel_path = cmake_source_dir.relative_to(Path.cwd())
+                    rel_path = cmake_source_dir.relative_to(project_root)
                     build_lib = Path(self.build_lib) / rel_path
                     build_lib.mkdir(parents=True, exist_ok=True)
                     dest_build = build_lib / lib_file.name
@@ -274,7 +298,7 @@ class BuildExt(build_ext):
                         )
                         print(f"Fixed install name for {dylib_file.name}")
 
-                        rel_path = cmake_source_dir.relative_to(Path.cwd())
+                        rel_path = cmake_source_dir.relative_to(project_root)
                         build_dylib = Path(self.build_lib) / rel_path / dylib_file.name
                         if build_dylib.exists():
                             subprocess.check_call(
@@ -298,8 +322,9 @@ class BuildExt(build_ext):
         if not deps_dir.exists():
             return
 
-        package_include_dst = cmake_source_dir / "include"
-        package_include_dst.mkdir(parents=True, exist_ok=True)
+        project_root = Path(__file__).resolve().parent
+        vendor_include_dst = project_root / "cykit" / "_vendor" / "include"
+        vendor_include_dst.mkdir(parents=True, exist_ok=True)
 
         for dep_dir in deps_dir.iterdir():
             src_inc = dep_dir / "include"
@@ -310,18 +335,21 @@ class BuildExt(build_ext):
                 if src_file.is_file():
                     rel_path = src_file.relative_to(src_inc)
 
-                    dst_file = package_include_dst / rel_path
+                    dst_file = vendor_include_dst / rel_path
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
                     dst_file.write_bytes(src_file.read_bytes())
 
-                    rel_cmake_path = cmake_source_dir.relative_to(Path.cwd())
                     build_include = (
-                        Path(self.build_lib) / rel_cmake_path / "include" / rel_path
+                        Path(self.build_lib)
+                        / "cykit"
+                        / "_vendor"
+                        / "include"
+                        / rel_path
                     )
                     build_include.parent.mkdir(parents=True, exist_ok=True)
                     build_include.write_bytes(src_file.read_bytes())
 
-            print(f"Vendored headers from {dep_dir.name} to {package_include_dst}")
+            print(f"Vendored headers from {dep_dir.name} to {vendor_include_dst}")
 
 
 base_ext_kwargs = config.get_base_ext_kwargs()
@@ -333,16 +361,10 @@ extensions = [
         sources=["cykit/cylogger/cylogger.pyx"],
         **cylogger_ext_kwargs,
     ),
-    Extension("cykit.common", sources=["cykit/common.pyx"], **base_ext_kwargs),
     Extension(
-        "cykit.utils.signal_handler.signal_handler",
-        sources=["cykit/utils/signal_handler/signal_handler.pyx"],
-        **cylogger_ext_kwargs,
-    ),
-    Extension(
-        "cykit.spsc_queue.spsc_queue",
-        sources=["cykit/spsc_queue/spsc_queue.pyx"],
-        **cylogger_ext_kwargs,
+        "cykit.queue.queue",
+        sources=["cykit/queue/queue.pyx"],
+        **base_ext_kwargs,
     ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
@@ -356,7 +378,16 @@ setup(
     name="cykit",
     version="0.0.8",
     packages=find_namespace_packages(
-        exclude=["examples", "examples.*", "build", "dist"]
+        exclude=[
+            "examples",
+            "examples.*",
+            "build",
+            "dist",
+            "cmake",
+            "cmake.*",
+            "tests",
+            "tests.*",
+        ]
     ),
     ext_modules=cythonize(
         extensions,
