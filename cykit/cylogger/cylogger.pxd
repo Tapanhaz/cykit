@@ -3,6 +3,26 @@ from libc.stdint cimport uint16_t
 from libcpp cimport bool as cbool
 from libcpp.string cimport string
 from libcpp.memory cimport shared_ptr
+from cykit.queue cimport Queue, QueueMode, Q_OK
+from cykit.common cimport (
+    atomic_bool,
+    thread,
+
+)
+
+from cykit.utils.transport cimport (
+    UdpSocket,
+    make_http_client,
+    make_http_session,
+    make_smtp_client, CancelToken,
+    TcpSocket, TcpTimeouts, CancellationSource,
+    TcpTimeouts, HttpClient, HttpResponse, HttpSession,
+    SmtpClient, SmtpMessage, SmtpAuth, SmtpMode, 
+    SmtpSendResult, OAuth2Config, SmtpErrorClass,
+    IdempotencyClass, HeaderList, RequestOptions,
+    smtp_error_class_str
+)
+
 
 cdef extern from "<spdlog/spdlog.h>" namespace "spdlog":
     cdef cppclass logger:
@@ -20,10 +40,16 @@ cdef extern from "spdlog/common.h" namespace "spdlog::level":
         critical
         off
 
-cdef extern from "spdlog_logger.hpp":
-    pass
-
 cdef extern from "spdlog_logger.hpp" nogil:
+    cdef enum SinkOverflowPolicy:
+        DROP_OLDEST
+        DROP_NEWEST
+        BLOCK
+
+    ctypedef int  (*SinkPushFn) (const char* data, size_t len, void* userdata)
+    ctypedef void (*SinkFlushFn)(void* userdata)
+
+
     cdef cppclass LoggerFactory:
         LoggerFactory() except + nogil
 
@@ -80,6 +106,16 @@ cdef extern from "spdlog_logger.hpp" nogil:
             uint16_t max_files
         ) except + nogil
 
+
+        LoggerFactory& add_custom_sink_handler(
+            SinkPushFn push_fn,
+            SinkFlushFn flush_fn,
+            void* userdata,
+            SinkOverflowPolicy overflow_policy,
+            level_enum level,
+            const string& pattern
+        ) except +
+
         LoggerFactory& set_color(
             level_enum level,
             int color
@@ -134,6 +170,11 @@ cdef extern from "spdlog_logger.hpp" nogil:
 
     void registry_set_default(shared_ptr[logger] logger)
     shared_ptr[logger] registry_get_logger_ptr(const string &name, bool fallback_to_default)  
+
+    ##### FOR INTERNAL LOGGGING ########################################
+    void enable_internal_logger(const string& name, level_enum level, const string& pattern)
+    void disable_internal_logger()
+    #####################################################################
 
     void TRACE(const char* fmt, ...)
     void DEBUG(const char* fmt, ...)
@@ -229,11 +270,33 @@ cpdef enum class Level:
     CRITICAL = level_enum.critical
     OFF = level_enum.off
 
+cpdef enum class OverflowPolicy:
+    DROP_OLDEST = 0
+    DROP_NEWEST = 1
+    BLOCK       = 2
+
+
 cdef class LogHandler:
     cdef:
         public bint color
         public str pattern
         public Level level
+
+
+cdef class UserSinkBase(LogHandler):
+    cdef:
+        Queue    _queue
+        thread       _thread
+        atomic_bool  _running
+        size_t       _queue_capacity
+        size_t       _max_msg_size
+        public OverflowPolicy _overflow_policy
+        public bytes _host_bytes_ref
+        public bint  _detach
+        public long  _queue_close_delay_ms
+
+    cdef void _start_worker(self, void (*fn)(void*) noexcept nogil) noexcept nogil
+    cpdef void stop(self)
 
 
 cdef class StdoutHandler(LogHandler):
@@ -274,6 +337,112 @@ cdef class DailyFileHandler(FileHandler):
         public uint16_t max_files
 
 
+cdef class TcpSocketHandler(UserSinkBase):
+    cdef:
+        bytes              _host_bytes
+        const char *        _host_c
+        uint16_t           _port
+        bint               _keepalive
+        bint               _reconnect_on_failure
+        TcpSocket *         _sock
+        TcpTimeouts         _timeouts
+        CancellationSource _cancel_src
+    
+    cpdef void close(self)
+    cdef void _tcp_loop(self) noexcept nogil
+    cdef inline void _try_connect(self, CancelToken tok) noexcept nogil
+    cdef inline cbool _send(self, const char * buf, size_t size, CancelToken tok) noexcept nogil
+
+
+cdef class UdpSocketHandler(UserSinkBase):
+
+    cdef:
+        bytes         _host_bytes
+        const char*   _host_c
+        uint16_t      _port
+        UdpSocket*    _sock
+
+    cpdef void close(self)
+    cdef void _udp_loop(self) noexcept nogil
+
+
+cdef class HttpHandler(UserSinkBase):
+
+    cdef:
+        bytes         _host_bytes
+        bytes         _path_bytes
+        bytes         _content_type_bytes
+        bytes         _ca_file_bytes
+        bytes         _ca_path_bytes
+        bytes         _cert_file_bytes
+        bytes         _key_file_bytes
+        bytes         _key_pwd_bytes
+        bytes         _user_agent_bytes
+        uint16_t      _port
+        bint          _keepalive
+        HttpClient*   _client
+        HttpSession*  _session
+
+        string host_str
+        string path_str
+        string content_type_str
+
+    cpdef void close(self)
+    cdef void _http_loop(self) noexcept nogil
+    cdef void _log_msg(self, HttpResponse res) noexcept nogil
+
+
+cdef class SmtpHandler(UserSinkBase):
+
+    cdef:
+        OAuth2Config _oauth2 
+        SmtpMode     _mode 
+        SmtpAuth     _auth
+
+        bytes        _host_bytes
+        bytes        _from_bytes
+        bytes        _to_bytes
+        bytes        _subject_bytes
+        bytes        _username_bytes
+        bytes        _password_bytes
+        bytes        _client_name_bytes
+        bytes        _oauth2_id_bytes
+        bytes        _oauth2_sec_bytes
+        bytes        _oauth2_ref_bytes
+        bytes        _oauth2_ep_bytes
+        uint16_t     _port
+        bint         _keepalive
+        int          _max_send_attempts
+        SmtpClient*  _client
+
+        double       _connect_timeout 
+        double       _tls_timeout     
+        double       _banner_timeout  
+        double       _command_timeout 
+        double       _data_timeout    
+        double       _response_timeout
+
+        string host_str
+        string from_addr_str
+        string to_addr_str
+        string subject_str
+        string username_str
+        string password_str
+        string client_name_str
+        string oauth2_id_str
+        string oauth2_sec_str
+        string oauth2_ref_str
+        string oauth2_ep_str
+
+    cpdef void close(self)
+    cdef SmtpClient* _make_client(self) except NULL nogil
+    cdef inline SmtpMessage _build_msg(
+            self, const char* buf, size_t size) noexcept nogil
+    cdef void _smtp_loop(self) noexcept nogil
+    cdef void _log_msg(self, SmtpSendResult res) noexcept nogil
+    
+
+
 cdef class ColorScheme:
     cdef:
         public int trace_color
@@ -282,6 +451,7 @@ cdef class ColorScheme:
         public int warn_color
         public int error_color
         public int critical_color
+        
 
 
 
@@ -291,8 +461,11 @@ cdef class Logger:
         #SpdLogger* _logger
         SpdLogger _logger
         shared_ptr[logger] _logger_ptr
+
+        list _handlers
     
     cdef SpdLogger get_logger(self)
+#    cpdef void close(self)
 
     cpdef void trace(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void debug(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
@@ -314,4 +487,24 @@ cdef SpdLogger get_logger_by_name(const char* name)
 #cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= *, bint fallback_to_default= *)
 cdef shared_ptr[logger]& get_logger_ptr(str name= *, bint fallback_to_default= *)
 cdef void get_logger(SpdLogger &log, str name= *, bint fallback_to_default= *)
+
+
+
+
+
+
+cdef void _tcp_worker_fn  (void* arg) noexcept nogil
+cdef void _udp_worker_fn  (void* arg) noexcept nogil
+cdef void _http_worker_fn (void* arg) noexcept nogil
+cdef void _smtp_worker_fn (void* arg) noexcept nogil
+
+
+cdef int  _tcp_push_fn  (const char* data, size_t len, void* ud) noexcept nogil
+cdef void _tcp_flush_fn (void* ud) noexcept nogil
+cdef int  _udp_push_fn  (const char* data, size_t len, void* ud) noexcept nogil
+cdef void _udp_flush_fn (void* ud) noexcept nogil
+cdef int  _http_push_fn (const char* data, size_t len, void* ud) noexcept nogil
+cdef void _http_flush_fn(void* ud) noexcept nogil
+cdef int  _smtp_push_fn (const char* data, size_t len, void* ud) noexcept nogil
+cdef void _smtp_flush_fn(void* ud) noexcept nogil
 
