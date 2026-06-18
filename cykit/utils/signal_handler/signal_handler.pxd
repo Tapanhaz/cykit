@@ -72,7 +72,7 @@ cdef extern from *:
                     }
                 }
                 
-                INFO("[SIGNAL] All contexts notified\\n");
+                DEBUG("[SIGNAL] All contexts notified\\n");
                 
                 io.stop();
                 
@@ -133,7 +133,7 @@ cdef extern from *:
                 delete g_signal_thread;
                 g_signal_thread = nullptr;
 
-                INFO("[SIGNAL] Handler initialized\\n");
+                DEBUG("[SIGNAL] Handler initialized\\n");
                 g_init_ok = true;
 
             } catch (...) {}
@@ -157,7 +157,7 @@ cdef extern from *:
         
         g_registered_contexts.push_back(ctx);
         
-        INFO("[SIGNAL] Registered context %p (total: %zu)\\n", 
+        DEBUG("[SIGNAL] Registered context %p (total: %zu)\\n", 
                context_ptr, g_registered_contexts.size());
     }
     
@@ -169,8 +169,8 @@ cdef extern from *:
         while (it != g_registered_contexts.end()) {
             if (it->context_ptr == context_ptr) {
                 g_registered_contexts.erase(it);
-                INFO("[SIGNAL] Unregistered context %p (remaining: %zu)\\n",
-                       context_ptr, g_registered_contexts.size());
+                //INFO("[SIGNAL] Unregistered context %p (remaining: %zu)\\n",
+                //       context_ptr, g_registered_contexts.size());
                 return;
             }
             ++it;
