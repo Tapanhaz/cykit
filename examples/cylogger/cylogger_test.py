@@ -9,6 +9,7 @@ logger = Logger("xyz")
 class TestClass:
     pass
 
+
 logger.trace("This is an TRACE msg from python main module")
 logger.debug("This is an DEBUG msg from python main module")
 logger.info("This is an INFO msg from python main module")
@@ -21,7 +22,7 @@ logger.critical(
 logger.info("printing object :: %s", TestClass())
 
 # Multiple arg should be provided as tuple.
-logger.info("printing object :: %s :: %d", (TestClass(), 123)) 
+logger.info("printing object :: %s :: %d", (TestClass(), 123))
 
 
 # the portion inside %^  %$ will be colored.

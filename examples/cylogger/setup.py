@@ -1,12 +1,14 @@
-import sys
-import cykit
-from pathlib import Path
+
 from Cython.Build import cythonize
 from setuptools import setup, Extension
-from cykit.build_config import config
+from cykit._build.config import config
 
 extensions = [
-    Extension("cy_module", sources=["cy_module.pyx"], **config.get_extension_kwargs())
+    Extension(
+        "cy_module", 
+        sources=["cy_module.pyx"], 
+        **config.get_extension_kwargs()
+        )
 ]
 
 setup(
