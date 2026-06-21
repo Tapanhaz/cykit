@@ -1,7 +1,7 @@
 import os
-from cykit.cylogger import *
+from cykit.cylogger import Logger, LogLevel
 
-logger = Logger("default", level=Level.DEBUG)
+logger = Logger("default", level=LogLevel.DEBUG)
 
 
 def test_log_objects():
