@@ -269,11 +269,14 @@ cdef class _BenchRunner:
         usleep_(<unsigned int>(DURATION_S * 1_000_000))
 
         self._shared.stop_flag.store(1, memory_order_release)
-        queue_close(<void*>&self._q, 3000)
+        
 
         for i in range(self._n_prod):
             if prod_threads[i].joinable():
                 prod_threads[i].join()
+        
+        queue_close(<void*>&self._q, -1)
+        
         for i in range(self._n_cons):
             if cons_threads[i].joinable():
                 cons_threads[i].join()
