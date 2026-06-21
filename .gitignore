@@ -19,7 +19,5 @@ dist/
 
 *.log
 
-tests/ 
-
 cykit/cylogger/build/
 
