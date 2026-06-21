@@ -214,7 +214,9 @@ class BuildExt(build_ext):
             if openssl_bin and github_env:
                 with open(github_env, "a", encoding="utf-8") as f:
                     f.write(f"CYKIT_OPENSSL_BIN_DIR={openssl_bin}\n")
-                print(f"[OpenSSL] Wrote CYKIT_OPENSSL_BIN_DIR={openssl_bin} to GITHUB_ENV")
+                print(
+                    f"[OpenSSL] Wrote CYKIT_OPENSSL_BIN_DIR={openssl_bin} to GITHUB_ENV"
+                )
 
         if platform.system() == "Windows":
             search_paths = [cmake_build_dir / "Release", cmake_build_dir]
