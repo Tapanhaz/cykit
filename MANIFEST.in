@@ -1,5 +1,6 @@
 
 include README.md
+include NOTICE.md
 
 include LICENSE-APACHE
 include LICENSE-MIT
