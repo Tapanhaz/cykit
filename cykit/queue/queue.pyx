@@ -889,8 +889,8 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR            
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR            
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -964,8 +964,8 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR
             atomic_wait(&q.publish[idx].seq, q.publish[idx].seq.load(memory_order_relaxed))
 
         slot = &q.slots[idx]
@@ -1018,8 +1018,8 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1170,8 +1170,8 @@ cdef inline int _mc_pop_impl(
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1453,8 +1453,9 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR
+            cpu_pause()
 
         slot = &q.slots[idx]
         atomic_thread_fence(memory_order_acquire)
@@ -1500,8 +1501,9 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-            if not q.running.load(memory_order_acquire):
-                return Q_ERR
+#            if not q.running.load(memory_order_acquire):
+#                return Q_ERR
+            cpu_pause()
 
         slot = &q.slots[idx]
         atomic_thread_fence(memory_order_acquire)
