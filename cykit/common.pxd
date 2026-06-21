@@ -4,6 +4,7 @@ from cpython.ref cimport PyObject
 from libcpp.atomic cimport atomic
 from libcpp cimport bool as cbool
 
+
 cdef extern from "Python.h":
     void Py_INCREF(PyObject*)
     void Py_DECREF(PyObject*)
@@ -155,16 +156,28 @@ cdef extern from * nogil:
 
 cdef extern from *:
     """
+    #ifdef _MSC_VER
+    #include <intrin.h>
+
+    static inline int builtin_ctzll(unsigned long long x) {
+        unsigned long index;
+        _BitScanForward64(&index, x);
+        return (int)index;
+    }
+
+    #else
+
     static inline int builtin_ctzll(unsigned long long x) {
         return __builtin_ctzll(x);
     }
+
+    #endif
     """
-    int builtin_ctzll(unsigned long long x) noexcept nogil    
+    int builtin_ctzll(unsigned long long x) noexcept nogil
 
 
 cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
     return n != 0 and (n & (n - 1)) == 0
-
 
 
 
