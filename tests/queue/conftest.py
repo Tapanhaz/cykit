@@ -10,6 +10,11 @@ from cykit._build.config import config
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS_DIR))
 
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+kwargs = config.get_extension_kwargs()
+kwargs["include_dirs"] = [str(PROJECT_ROOT), *kwargs.get("include_dirs", [])]
+
 pyximport.install(
     language_level=3,
     inplace=True,
@@ -18,7 +23,7 @@ pyximport.install(
             Extension(
                 name="queuetest",
                 sources=[str(TESTS_DIR / "queuetest.pyx")],
-                **config.get_extension_kwargs(),
+                **kwargs,
             )
         ],
         "cmdclass": {"build_ext": build_ext},
