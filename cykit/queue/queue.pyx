@@ -144,7 +144,7 @@ cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
                 break
             usleep_(5000)
     
-    if q.mode == MPSC or q.mode == MPMC:
+    if q.mode == MPSC: # or q.mode == MPMC:
         t = q.head.load(memory_order_acquire)
         tl = q.tail.load(memory_order_acquire)
         while t < tl:
@@ -159,6 +159,9 @@ cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
     atomic_notify_all(&q.tail)
     atomic_notify_all(&q.head)
     atomic_notify_all(&q.reader_min_pos)
+    
+    if q.mode == MPMC:
+        atomic_notify_all(&q.reader_active_mask)
 
     return 0 if _is_empty(q) else -1
 
