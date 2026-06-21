@@ -48,6 +48,10 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [tool.cibuildwheel.windows]
 
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [project.urls]
 Homepage = "https://github.com/Tapanhaz/cykit"
 Source = "https://github.com/Tapanhaz/cykit"
