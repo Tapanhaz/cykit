@@ -137,6 +137,8 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT _OSSL_FC AND OpenSSL_FOUND)
     get_filename_component(_ssl_dir "${OPENSSL_SSL_LIBRARY}" DIRECTORY)
+    get_filename_component(_ssl_bin_dir "${_ssl_dir}/../bin" ABSOLUTE)
+    set(OPENSSL_BIN_DIR "${_ssl_bin_dir}")
     file(GLOB _dlls
         "${_ssl_dir}/../bin/libssl*.dll"
         "${_ssl_dir}/../bin/libcrypto*.dll")
@@ -158,6 +160,7 @@ else()
 "OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}
 OPENSSL_SSL_LIBRARY=${OPENSSL_SSL_LIBRARY}
 OPENSSL_CRYPTO_LIBRARY=${OPENSSL_CRYPTO_LIBRARY}
+OPENSSL_BIN_DIR=${OPENSSL_BIN_DIR}
 OPENSSL_FROM_FETCHCONTENT=0
 ")
 endif()

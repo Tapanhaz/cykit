@@ -62,6 +62,9 @@ class BuildConfig:
     def _get_openssl_include_dirs(self) -> list:
         raw = self._parse_openssl_paths().get("OPENSSL_INCLUDE_DIR", "")
         return [d for d in raw.split(";") if d and Path(d).exists()]
+    
+    def _get_openssl_bin_dir(self) -> str:
+        return self._parse_openssl_paths().get("OPENSSL_BIN_DIR", "")
 
     def _get_openssl_lib_dirs(self) -> list:
         dirs = []
