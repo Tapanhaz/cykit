@@ -138,7 +138,7 @@ cdef class LogHandler:
         self,  
         bint color=True, 
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE
+        LogLevel level=LogLevel.TRACE
             ):
         self.color = color
         self.pattern = pattern
@@ -149,7 +149,7 @@ cdef class UserSinkBase(LogHandler):
     def __init__(
         self,
         str            pattern,
-        Level          level,
+        LogLevel          level,
         size_t         queue_capacity,
         size_t         max_msg_size,
         OverflowPolicy overflow_policy,    
@@ -206,8 +206,8 @@ cdef class StdoutHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE, 
-        Level max_level=Level.INFO
+        LogLevel level=LogLevel.TRACE, 
+        LogLevel max_level=LogLevel.INFO
             ):
         super().__init__(color, pattern, level)
         self.max_level = max_level
@@ -217,7 +217,7 @@ cdef class StderrHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.WARN
+        LogLevel level=LogLevel.WARN
             ):
         super().__init__(color, pattern, level)
 
@@ -226,7 +226,7 @@ cdef class BasicConsoleHandler(LogHandler):
         self, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE
+        LogLevel level=LogLevel.TRACE
             ):
         super().__init__(color, pattern, level)
 
@@ -237,10 +237,10 @@ cdef class ConsoleHandler(LogHandler):
         self,  
         bint color=True,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level max_stdout_level=Level.INFO, 
-        Level min_level=Level.TRACE
+        LogLevel max_stdout_level=LogLevel.INFO, 
+        LogLevel min_level=LogLevel.TRACE
             ):
-        super().__init__(color, pattern, Level.TRACE)
+        super().__init__(color, pattern, LogLevel.TRACE)
         self.max_stdout_level = max_stdout_level
         self.min_level = min_level
 
@@ -252,7 +252,7 @@ cdef class FileHandler(LogHandler):
         str filename, 
         bint color=False,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE, 
+        LogLevel level=LogLevel.TRACE, 
         bint overwrite=False
             ):
         super().__init__(color, pattern, level)
@@ -266,7 +266,7 @@ cdef class RotatingFileHandler(FileHandler):
         self, 
         str filename, 
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE, 
+        LogLevel level=LogLevel.TRACE, 
         size_t max_size=1048576, 
         size_t max_files=3
             ):
@@ -281,7 +281,7 @@ cdef class DailyFileHandler(FileHandler):
         self,
         str filename,
         str pattern="[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level level=Level.TRACE,
+        LogLevel level=LogLevel.TRACE,
         int rotation_hour=0,
         int rotation_minute=0,
         bint truncate=False,
@@ -305,7 +305,7 @@ cdef class TcpSocketHandler(UserSinkBase):
         str            host,
         uint16_t       port,
         str            pattern              = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level          level                = Level.TRACE,
+        LogLevel          level                = LogLevel.TRACE,
         size_t         queue_capacity       = 4096,
         size_t         max_msg_size         = 4096,
         OverflowPolicy overflow_policy      = OverflowPolicy.DROP_OLDEST,
@@ -404,7 +404,7 @@ cdef class UdpSocketHandler(UserSinkBase):
         str            host,
         uint16_t       port,
         str            pattern         = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level          level           = Level.TRACE,
+        LogLevel          level           = LogLevel.TRACE,
         size_t         queue_capacity  = 4096,
         size_t         max_msg_size    = 4096,
         OverflowPolicy overflow_policy = OverflowPolicy.DROP_OLDEST,
@@ -463,7 +463,7 @@ cdef class HttpHandler(UserSinkBase):
         str            path                 = "/",
         str            content_type         = "text/plain",
         str            pattern              = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level          level                = Level.WARN,
+        LogLevel          level                = LogLevel.WARN,
         size_t         queue_capacity       = 512,
         size_t         max_msg_size         = 65536,
         OverflowPolicy overflow_policy      = OverflowPolicy.DROP_OLDEST,
@@ -656,7 +656,7 @@ cdef class SmtpHandler(UserSinkBase):
         str               username            = "",
         str               password            = "",
         str               pattern             = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        Level             level               = Level.ERROR,
+        LogLevel             level               = LogLevel.ERROR,
         size_t            queue_capacity      = 128,
         size_t            max_msg_size        = 65536,
         OverflowPolicy    overflow_policy     = OverflowPolicy.DROP_OLDEST,
@@ -896,7 +896,7 @@ cdef class Logger:
     def __init__(
             self, 
             str name, 
-            Level level=  Level.TRACE,
+            LogLevel level=  LogLevel.TRACE,
             str pattern= "[%d-%m-%Y %H:%M:%S.%f] [%n] [%^%l%$] %v",
             list handlers = [],
             ColorScheme color_scheme= None,

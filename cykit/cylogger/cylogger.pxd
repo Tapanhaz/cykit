@@ -261,7 +261,7 @@ cdef extern from "spdlog_logger.hpp" nogil:
     void CRITICAL_PY_LOG(const char* msg)
 
 
-cpdef enum class Level:
+cpdef enum class LogLevel:
     TRACE = level_enum.trace
     DEBUG = level_enum.debug
     INFO = level_enum.info
@@ -280,7 +280,7 @@ cdef class LogHandler:
     cdef:
         public bint color
         public str pattern
-        public Level level
+        public LogLevel level
 
 
 cdef class UserSinkBase(LogHandler):
@@ -300,7 +300,7 @@ cdef class UserSinkBase(LogHandler):
 
 
 cdef class StdoutHandler(LogHandler):
-    cdef public Level max_level
+    cdef public LogLevel max_level
 
 
 cdef class StderrHandler(LogHandler):
@@ -313,8 +313,8 @@ cdef class BasicConsoleHandler(LogHandler):
 
 cdef class ConsoleHandler(LogHandler):
     cdef:
-        public Level max_stdout_level
-        public Level min_level
+        public LogLevel max_stdout_level
+        public LogLevel min_level
 
 
 cdef class FileHandler(LogHandler):

@@ -1,7 +1,7 @@
 from typing import Optional, Literal, List
 from enum import IntEnum
 
-class Level(IntEnum):
+class LogLevel(IntEnum):
     TRACE = ...
     DEBUG = ...
     INFO = ...
@@ -35,20 +35,20 @@ class SmtpErrorCategory(IntEnum):
 class LogHandler:
     color: bool
     pattern: str
-    level: Level
+    level: LogLevel
 
     def __init__(
         self,
         color: bool = True,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
     ) -> None: ...
 
 class UserSinkBase(LogHandler):
     def __init__(
         self,
         pattern: str,
-        level: Level,
+        level: LogLevel,
         queue_capacity: int,
         max_msg_size: int,
         overflow_policy: OverflowPolicy,
@@ -58,14 +58,14 @@ class UserSinkBase(LogHandler):
     def stop(self) -> None: ...
 
 class StdoutHandler(LogHandler):
-    max_level: Level
+    max_level: LogLevel
 
     def __init__(
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
-        max_level: Level = Level.INFO,
+        level: LogLevel = LogLevel.TRACE,
+        max_level: LogLevel = LogLevel.INFO,
     ) -> None: ...
 
 class StderrHandler(LogHandler):
@@ -73,7 +73,7 @@ class StderrHandler(LogHandler):
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.WARN,
+        level: LogLevel = LogLevel.WARN,
     ) -> None: ...
 
 class BasicConsoleHandler(LogHandler):
@@ -81,19 +81,19 @@ class BasicConsoleHandler(LogHandler):
         self,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
     ) -> None: ...
 
 class ConsoleHandler(LogHandler):
-    max_stdout_level: Level
-    min_level: Level
+    max_stdout_level: LogLevel
+    min_level: LogLevel
 
     def __init__(
         self,
         color: bool = True,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        max_stdout_level: Level = Level.INFO,
-        min_level: Level = Level.TRACE,
+        max_stdout_level: LogLevel = LogLevel.INFO,
+        min_level: LogLevel = LogLevel.TRACE,
     ) -> None: ...
 
 class FileHandler(LogHandler):
@@ -105,7 +105,7 @@ class FileHandler(LogHandler):
         filename: str,
         color: bool = False,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         overwrite: bool = False,
     ) -> None: ...
 
@@ -117,7 +117,7 @@ class RotatingFileHandler(FileHandler):
         self,
         filename: str,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         max_size: int = 1048576,
         max_files: int = 3,
     ) -> None: ...
@@ -127,7 +127,7 @@ class DailyFileHandler(FileHandler):
         self,
         filename: str,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         rotation_hour: int = 0,
         rotation_minute: int = 0,
         truncate: bool = False,
@@ -140,7 +140,7 @@ class TcpSocketHandler(UserSinkBase):
         host: str,
         port: int,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         queue_capacity: int = 4096,
         max_msg_size: int = 4096,
         overflow_policy: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
@@ -160,7 +160,7 @@ class UdpSocketHandler(UserSinkBase):
         host: str,
         port: int,
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         queue_capacity: int = 4096,
         max_msg_size: int = 4096,
         overflow_policy: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
@@ -179,7 +179,7 @@ class HttpHandler(UserSinkBase):
         path: str = "/",
         content_type: str = "text/plain",
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.WARN,
+        level: LogLevel = LogLevel.WARN,
         queue_capacity: int = 512,
         max_msg_size: int = 65536,
         overflow_policy: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
@@ -230,7 +230,7 @@ class SmtpHandler(UserSinkBase):
         username: str = "",
         password: str = "",
         pattern: str = "[%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v",
-        level: Level = Level.ERROR,
+        level: LogLevel = LogLevel.ERROR,
         queue_capacity: int = 128,
         max_msg_size: int = 65536,
         overflow_policy: OverflowPolicy = OverflowPolicy.DROP_OLDEST,
@@ -275,7 +275,7 @@ class Logger:
     def __init__(
         self,
         name: str,
-        level: Level = Level.TRACE,
+        level: LogLevel = LogLevel.TRACE,
         handlers: Optional[List] = [],
         color_scheme: Optional[ColorScheme] = None,
         set_default: bool = False,
