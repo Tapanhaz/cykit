@@ -8,7 +8,7 @@
 Provides a Cython wrapper around the underlying C++ spdlog logging backend,
 including console, file, rotating file, daily file, TCP, UDP, HTTP,
 and SMTP sinks. Supports custom formatting, colorized output, Python
-stdlib logging interception, and fully asynchronous network delivery.
+stdlib logging interception, and network delivery.
 
 @note
 - All network-backed handlers use lock-free queues internally.
@@ -49,7 +49,7 @@ cdef bint _diag_initialized = False
 
 
 cpdef enum class SmtpAuthMethod:
-    NONE = <int>SmtpAuth.none
+    NONE = <int>SmtpAuth.Off
     PLAIN = <int>SmtpAuth.Plain
     LOGIN = <int>SmtpAuth.Login
     XOAUTH2 = <int>SmtpAuth.XOAuth2
@@ -60,7 +60,7 @@ cpdef enum class SmtpSecurityMode:
     SMTPS = <int>SmtpMode.Smtps
 
 cpdef enum class SmtpErrorCategory:
-    NONE = <int>SmtpErrorClass.none
+    NONE = <int>SmtpErrorClass.NoErr
     TRANSIENT = <int>SmtpErrorClass.Transient
     PERMANENT = <int>SmtpErrorClass.Permanent
     SERVICE_DOWN = <int>SmtpErrorClass.ServiceDown
@@ -322,7 +322,7 @@ cdef class TcpSocketHandler(UserSinkBase):
                          max_msg_size, overflow_policy,
                          close_timeout_ms, detach)
         self._host_bytes         = host.encode()
-        self._host_c             = self._host_bytes
+        self._host_str             = string(<const char*>self._host_bytes)
         self._port               = port
         self._keepalive          = keepalive
         self._reconnect_on_failure = reconnect_on_failure
@@ -336,6 +336,7 @@ cdef class TcpSocketHandler(UserSinkBase):
             self._start_worker(_tcp_worker_fn)
 
     cpdef void close(self):
+        self.stop()
         self._cancel_src.cancel() 
         if self._sock != NULL:
             self._sock.close()
@@ -379,9 +380,9 @@ cdef class TcpSocketHandler(UserSinkBase):
                         self._sock.close()
 
     cdef inline void _try_connect(self, CancelToken tok) noexcept nogil:
-        self._sock.close()
+        #self._sock.close()
         self._sock.connect(
-            self._host_c, self._port,
+            self._host_str, self._port,
             self._timeouts, self._keepalive, tok)
 
     cdef inline cbool _send(
@@ -416,11 +417,11 @@ cdef class UdpSocketHandler(UserSinkBase):
                          max_msg_size, overflow_policy,
                          close_timeout_ms, detach)
         self._host_bytes = host.encode()
-        self._host_c     = self._host_bytes
+        self._host_str     = string(<const char*>self._host_bytes)
         self._port       = port
 
         self._sock       = new UdpSocket()
-        self._sock.create_client(self._host_c, self._port,
+        self._sock.create_client(self._host_str, self._port,
                                  recv_timeout_sec, False, send_timeout_sec)
         with nogil:
             self._start_worker(_udp_worker_fn)
@@ -429,6 +430,8 @@ cdef class UdpSocketHandler(UserSinkBase):
         self.close()
 
     cpdef void close(self):
+        self.stop()
+
         if self._sock != NULL:
             self._sock.close()
             del self._sock

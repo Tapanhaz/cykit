@@ -292,8 +292,8 @@ cdef class UserSinkBase(LogHandler):
         size_t       _max_msg_size
         public OverflowPolicy _overflow_policy
         public bytes _host_bytes_ref
-        public bint  _detach
-        public long  _queue_close_delay_ms
+        bint  _detach
+        long  _queue_close_delay_ms
 
     cdef void _start_worker(self, void (*fn)(void*) noexcept nogil) noexcept nogil
     cpdef void stop(self)
@@ -340,7 +340,7 @@ cdef class DailyFileHandler(FileHandler):
 cdef class TcpSocketHandler(UserSinkBase):
     cdef:
         bytes              _host_bytes
-        const char *        _host_c
+        string             _host_str
         uint16_t           _port
         bint               _keepalive
         bint               _reconnect_on_failure
@@ -358,7 +358,7 @@ cdef class UdpSocketHandler(UserSinkBase):
 
     cdef:
         bytes         _host_bytes
-        const char*   _host_c
+        string        _host_str
         uint16_t      _port
         UdpSocket*    _sock
 
@@ -507,4 +507,3 @@ cdef int  _http_push_fn (const char* data, size_t len, void* ud) noexcept nogil
 cdef void _http_flush_fn(void* ud) noexcept nogil
 cdef int  _smtp_push_fn (const char* data, size_t len, void* ud) noexcept nogil
 cdef void _smtp_flush_fn(void* ud) noexcept nogil
-

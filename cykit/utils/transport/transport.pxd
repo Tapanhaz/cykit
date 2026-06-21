@@ -11,7 +11,7 @@ from libc.stdint cimport uint8_t, uint16_t
 from libcpp.optional cimport optional
 
 
-ctypedef int none "None"
+
 
 cdef extern from *:
     """
@@ -30,17 +30,18 @@ cdef extern from *:
 
 
 cdef extern from "base_transport.hpp" namespace "transport" nogil:
+        
     cdef enum class TransportErrorKind "transport::TransportErrorKind":
-        none      "transport::TransportErrorKind::None"
-        Timeout   "transport::TransportErrorKind::Timeout"
-        Dns       "transport::TransportErrorKind::Dns"
-        Connect   "transport::TransportErrorKind::Connect"
-        Tls       "transport::TransportErrorKind::Tls"
-        Protocol  "transport::TransportErrorKind::Protocol"
-        Auth      "transport::TransportErrorKind::Auth"
-        Remote    "transport::TransportErrorKind::Remote"
-        Cancelled "transport::TransportErrorKind::Cancelled"
-        Local     "transport::TransportErrorKind::Local"
+        NoErr     "NoErr"
+        Timeout   "Timeout"
+        Dns       "Dns"
+        Connect   "Connect"
+        Tls       "Tls"
+        Protocol  "Protocol"
+        Auth      "Auth"
+        Remote    "Remote"
+        Cancelled "Cancelled"
+        Local     "Local"
 
 
     cdef cppclass TransportError:
@@ -137,9 +138,9 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
 
 
     cdef enum class IdempotencyClass "transport::IdempotencyClass":
-        Idempotent  "transport::IdempotencyClass::Idempotent"
-        NonIdempotent "transport::IdempotencyClass::NonIdempotent"
-        Force       "transport::IdempotencyClass::Force"
+        Idempotent  "Idempotent"
+        NonIdempotent "NonIdempotent"
+        Force       "Force"
 
     cdef cppclass RetryPolicy:
         int              max_attempts
@@ -365,23 +366,23 @@ cdef extern from "base_transport.hpp" namespace "transport" nogil:
 
         void set_refresh_provider(const string& token_endpoint) except +
 
-    cdef enum SmtpAuth "transport::SmtpAuth":
-        none    "transport::SmtpAuth::None"
-        Plain   "transport::SmtpAuth::Plain"
-        Login   "transport::SmtpAuth::Login"
-        XOAuth2 "transport::SmtpAuth::XOAuth2"
+    cdef enum class SmtpAuth "transport::SmtpAuth":
+        Off    "Off"
+        Plain   "Plain"
+        Login   "Login"
+        XOAuth2 "XOAuth2"
 
 
-    cdef enum SmtpMode "transport::SmtpMode":
-        Plain    "transport::SmtpMode::Plain"
-        StartTls "transport::SmtpMode::StartTls"
-        Smtps    "transport::SmtpMode::Smtps"
+    cdef enum class SmtpMode "transport::SmtpMode":
+        Plain    "Plain"
+        StartTls "StartTls"
+        Smtps    "Smtps"
 
-    cdef enum SmtpErrorClass "transport::SmtpErrorClass":
-        none  "transport::SmtpErrorClass::None"
-        Transient   "transport::SmtpErrorClass::Transient"
-        Permanent   "transport::SmtpErrorClass::Permanent"
-        ServiceDown "transport::SmtpErrorClass::ServiceDown"
+    cdef enum class SmtpErrorClass "transport::SmtpErrorClass":
+        NoErr       "NoErr"
+        Transient   "Transient"
+        Permanent   "Permanent"
+        ServiceDown "ServiceDown"
 
     cdef cppclass SmtpCapabilities:
         cbool        starttls
@@ -588,7 +589,7 @@ cdef inline SmtpTimeouts _build_smtp_timeouts(
         double command_sec,
         double data_sec,
         double response_sec
-) nogil:
+) noexcept nogil:
     cdef SmtpTimeouts t
     t.connect_sec  = connect_sec
     t.tls_sec      = tls_sec
@@ -710,8 +711,8 @@ cdef inline HttpSession* make_http_session(
 
 
 cdef inline const char* smtp_error_class_str(SmtpErrorClass ec) noexcept nogil:
-    if ec == SmtpErrorClass.none:
-        return b"None"
+    if ec == SmtpErrorClass.NoErr:
+        return b"NoError"
     elif ec == SmtpErrorClass.Transient:
         return b"Transient"
     elif ec == SmtpErrorClass.Permanent:
@@ -735,7 +736,7 @@ cdef inline SmtpClient* make_smtp_client(
         double       command_timeout     = 30.0,
         double       data_timeout        = 60.0,
         double       response_timeout    = 30.0,
-) except + nogil:
+) noexcept nogil:
     return new SmtpClient(host, port, client_name, username, password,
                           mode, auth_mech, oauth2, max_send_attempts,
                           _build_smtp_timeouts(connect_timeout, tls_timeout,
