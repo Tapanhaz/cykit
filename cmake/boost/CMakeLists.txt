@@ -1,30 +1,35 @@
 cmake_minimum_required(VERSION 3.15)
 project(vendor_boost VERSION 1.0 LANGUAGES CXX)
 
-cmake_policy(SET CMP0169 OLD)
+if(CMAKE_VERSION VERSION_LESS "3.30")
+    cmake_policy(SET CMP0169 OLD)
+endif()
 
 include(FetchContent)
 
 set(BOOST_VERSION "boost-1.87.0")
 
+if(NOT DEFINED VENDOR_INCLUDE_DIR OR VENDOR_INCLUDE_DIR STREQUAL "")
+    get_filename_component(VENDOR_INCLUDE_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../cykit/_vendor/include" ABSOLUTE)
+endif()
 
 function(fetch_boost_headers module git_url)
     FetchContent_Declare(
         ${module}
         GIT_REPOSITORY ${git_url}
         GIT_TAG ${BOOST_VERSION}
+        SOURCE_SUBDIR  "none_skip_build"
     )
     
-    FetchContent_GetProperties(${module})
-    if(NOT ${module}_POPULATED)
-        FetchContent_Populate(${module})
-    endif()
+    FetchContent_MakeAvailable(${module})
     
     add_custom_target(${module}_headers ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/include/boost
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${VENDOR_INCLUDE_DIR}/boost"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${${module}_SOURCE_DIR}/include/boost
-                ${CMAKE_CURRENT_SOURCE_DIR}/include/boost
+                "${VENDOR_INCLUDE_DIR}/boost"
         COMMENT "Vendoring ${module} headers"
     )
 endfunction()

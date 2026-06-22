@@ -1,4 +1,23 @@
-from cykit.spsc_queue cimport SPSC_OK
+"""
+@file msgbridge.pyx
+@brief Message dispatchers and communication primitives.
+@date 2026-06-18
+@copyright Part of the https://github.com/Tapanhaz/cykit library.
+
+@details
+Provides utilities for transferring messages between Cython and
+Python execution contexts, along with native message pipes and
+buffer conversion helpers.
+
+@note
+- AsyncDispatcher delivers messages to Python asyncio callbacks.
+- SyncDispatcher delivers messages to Python callbacks.
+- CyPipe provides direct Cython-to-Cython message transport.
+- CBufferView converts Python objects into native buffer views.
+- Supports fixed-size and variable-size message transport.
+"""
+
+from cykit.queue cimport QueueMode, Q_OK
 from cykit.common cimport (
     make_thread, 
     Py_buffer,
@@ -77,9 +96,10 @@ cdef class AsyncDispatcher:
                 bint variable_size= False
                 ):
 
-        self._q = SPSCQueue(
+        self._q = Queue(
                         slot_size= slot_size,
                         capacity= capacity,
+                        mode = QueueMode.SPSC,
                         overwrite= overwrite,
                         zerocopy= zerocopy
                         )
@@ -138,7 +158,7 @@ cdef class AsyncDispatcher:
             unsigned int counter = 0 
 
         while self._running:
-            if self._q.try_pop(&buf, &size) == SPSC_OK:
+            if self._q.try_pop(&buf, &size) == Q_OK:
                 await self._callback(buf[:size])
 
                 counter = (counter + 1) & 127
@@ -155,7 +175,7 @@ cdef class AsyncDispatcher:
             unsigned int counter = 0
 
         while self._running:
-            if self._q.try_pop_var(&buf, &size) == SPSC_OK:
+            if self._q.try_pop_var(&buf, &size) == Q_OK:
                 await self._callback(buf[:size])
 
                 counter = (counter + 1) & 127
@@ -238,9 +258,10 @@ cdef class SyncDispatcher:
         self._detach = detach
         self._nonblocking = nonblocking
 
-        self._q = SPSCQueue(
+        self._q = Queue(
                         slot_size= slot_size,
                         capacity= capacity,
+                        mode= QueueMode.SPSC,
                         overwrite= overwrite,
                         zerocopy= zerocopy,
                         block_on_full= block_on_full
@@ -322,7 +343,7 @@ cdef class SyncDispatcher:
             Py_INCREF(cb)
 
         while self._running.load(memory_order_acquire):
-            if self._q.try_pop(&buf, &size) == SPSC_OK:
+            if self._q.try_pop(&buf, &size) == Q_OK:
                 with gil:
                     (<object>cb)(<object>PyBytes_FromStringAndSize(buf, size))
             else:
@@ -342,7 +363,7 @@ cdef class SyncDispatcher:
             Py_INCREF(cb)
 
         while self._running.load(memory_order_acquire):
-            if self._q.try_pop_var(&buf, &size) == SPSC_OK:
+            if self._q.try_pop_var(&buf, &size) == Q_OK:
                 with gil:
                     (<object>cb)(<object>PyBytes_FromStringAndSize(buf, size))
             else:
@@ -363,7 +384,7 @@ cdef class SyncDispatcher:
             Py_INCREF(cb)
 
         while self._running.load(memory_order_acquire):
-            if self._q.pop_borrow(&buf, &size) == SPSC_OK:
+            if self._q.pop_borrow(&buf, &size) == Q_OK:
                 with gil:
                     (<object>cb)(<object>PyBytes_FromStringAndSize(buf, size))
 
@@ -384,7 +405,7 @@ cdef class SyncDispatcher:
             
 
         while self._running.load(memory_order_acquire):
-            if self._q.pop_var(&buf, &size) == SPSC_OK:
+            if self._q.pop_var(&buf, &size) == Q_OK:
                 with gil:
                     (<object>cb)(<object>PyBytes_FromStringAndSize(buf, size))
         
@@ -434,9 +455,10 @@ cdef class CyPipe:
             bint variable_size = False
         ):
     
-        self._q = SPSCQueue(
+        self._q = Queue(
                         slot_size= slot_size,
                         capacity= capacity,
+                        mode = QueueMode.SPSC,
                         overwrite= overwrite,
                         zerocopy= zerocopy,
                         block_on_full= block_on_full
@@ -616,13 +638,14 @@ cdef class AsyncQueue:
             bint block_on_full= False
         ):
 
-        self._q = SPSCQueue(
-                        slot_size,
-                        capacity,
-                        overwrite,
-                        zerocopy,
-                        block_on_full
-                    )
+        self._q = Queue(
+                    slot_size= slot_size,
+                    capacity= capacity,
+                    mode= QueueMode.SPSC,
+                    overwrite= overwrite,
+                    zerocopy= zerocopy,
+                    block_on_full= block_on_full
+                )
 
         self._lock = asyncio.Lock()
         self._notify_cond = asyncio.Condition(self._lock)
@@ -692,7 +715,7 @@ cdef class AsyncQueue:
             size_t size 
         
         while True:
-            if self._q.try_pop(&data, &size) == SPSC_OK:
+            if self._q.try_pop(&data, &size) == Q_OK:
                 return data[:size]
             else:
                 async with self._notify_cond:
@@ -705,7 +728,7 @@ cdef class AsyncQueue:
             size_t size 
 
         while True:
-            if self._q.try_pop(&data, &size) == SPSC_OK:
+            if self._q.try_pop(&data, &size) == Q_OK:
                 await self._callback(data[:size])
             
             else:

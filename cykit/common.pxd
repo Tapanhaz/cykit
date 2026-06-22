@@ -4,17 +4,21 @@ from cpython.ref cimport PyObject
 from libcpp.atomic cimport atomic
 from libcpp cimport bool as cbool
 
+
 cdef extern from "Python.h":
     void Py_INCREF(PyObject*)
     void Py_DECREF(PyObject*)
     void Py_XDECREF(PyObject*)
     
+    PyObject* PyObject_Str(PyObject* o) except NULL
     char* PyBytes_AsString(object)
     char* PyBytes_AS_STRING(PyObject*)
     Py_ssize_t PyBytes_Size(object)
     Py_ssize_t PyBytes_GET_SIZE(PyObject*)
     PyObject* PyBytes_FromStringAndSize(char*, Py_ssize_t)
     PyObject* PyUnicode_FromString(const char*)
+    PyObject* PyUnicode_Format(PyObject* format, PyObject* args) except NULL
+    const char* PyUnicode_AsUTF8(PyObject* unicode) except NULL
     
     PyObject* PyObject_CallFunctionObjArgs(PyObject*, ...)
     int Py_AddPendingCall(int (*func)(void*), void*)
@@ -38,6 +42,8 @@ cdef extern from "Python.h":
     void PyErr_Clear()
     PyObject* PyErr_Occurred()
     void PyErr_SetInterrupt()
+    PyObject* PyExc_RuntimeWarning
+    int PyErr_WarnEx(PyObject* category, const char* message, Py_ssize_t stacklevel)
 
     int PyLong_Check(PyObject* obj)     
     int PyLong_CheckExact(PyObject* obj) 
@@ -120,4 +126,58 @@ cdef extern from *:
     thread make_thread[F, A](F f, A a) noexcept nogil
 
 
-cdef bint is_power_of_two(uint32_t n) noexcept nogil
+cdef extern from * nogil:
+    """
+    #if defined(_MSC_VER)
+        #include <immintrin.h>
+        static __forceinline void cpu_pause(void) {
+            _mm_pause();
+        }
+
+    #elif defined(__i386__) || defined(__x86_64__)
+        #include <immintrin.h>
+        static __inline__ void cpu_pause(void) {
+            __builtin_ia32_pause();
+        }
+
+    #elif defined(__aarch64__) || defined(__arm__)
+        static __inline__ void cpu_pause(void) {
+            __asm__ __volatile__("yield");
+        }
+
+    #else
+        static __inline__ void cpu_pause(void) {
+            __asm__ __volatile__("" ::: "memory");
+        }
+    #endif
+    """
+    void cpu_pause() noexcept
+
+
+cdef extern from *:
+    """
+    #ifdef _MSC_VER
+    #include <intrin.h>
+
+    static inline int builtin_ctzll(unsigned long long x) {
+        unsigned long index;
+        _BitScanForward64(&index, x);
+        return (int)index;
+    }
+
+    #else
+
+    static inline int builtin_ctzll(unsigned long long x) {
+        return __builtin_ctzll(x);
+    }
+
+    #endif
+    """
+    int builtin_ctzll(unsigned long long x) noexcept nogil
+
+
+cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
+    return n != 0 and (n & (n - 1)) == 0
+
+
+

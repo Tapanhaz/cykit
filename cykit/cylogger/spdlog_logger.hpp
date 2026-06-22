@@ -1,19 +1,43 @@
 
+/**
+ * @file spdlog_logger.hpp
+ * @brief Header for interfacing with spdlog
+ * @date 2025-12-27 22:55:42 +0530
+ * @copyright Part of the https://github.com/Tapanhaz/cykit library.
+ */
+
+
 #pragma once
 
+#ifndef SPDLOG_HEADER_ONLY
+    #define SPDLOG_HEADER_ONLY
+#endif
+
+#ifndef FMT_HEADER_ONLY
+    #define FMT_HEADER_ONLY
+#endif
+
 #include <map>
+#include <mutex>
 #include <memory>
 #include <vector>
 #include <string>
 #include <cstdarg>
+#include <cstddef>
+#include <cstdint>
 #include <Python.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/sink.h>
+#include <spdlog/sinks/base_sink.h>
+#include <spdlog/details/log_msg.h>
 #include <spdlog/sinks/null_sink.h>
+#include <spdlog/details/fmt_helper.h>
 #include <spdlog/sinks/stdout_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
+
 
 #ifdef _WIN32
     #include <spdlog/sinks/ansicolor_sink.h>
@@ -30,17 +54,94 @@
     #endif
 #endif
 
+
+enum class SinkOverflowPolicy : uint8_t {
+    DROP_OLDEST = 0,
+    DROP_NEWEST = 1,
+    BLOCK       = 2
+};
+
+
+typedef int  (*SinkPushFn) (const char* data, size_t len, void* userdata);
+typedef void (*SinkFlushFn)(void* userdata);
+
+
+
+namespace sink_adapter {
+
+    class SinkAdapter final : public spdlog::sinks::base_sink<std::mutex> {
+    public:
+        SinkAdapter(
+            SinkPushFn          push_fn,
+            SinkFlushFn         flush_fn,
+            void*               userdata,
+            SinkOverflowPolicy  overflow_policy
+        ) : push_fn_(push_fn), flush_fn_(flush_fn),
+            userdata_(userdata), overflow_policy_(overflow_policy) {}
+    
+        ~SinkAdapter() = default;
+    
+    protected:
+        void sink_it_(const spdlog::details::log_msg& msg) override {
+            fmt_buf_.clear();
+            formatter_->format(msg, fmt_buf_);
+            //fmt_buf_.push_back('\0');
+    
+            //int ret = push_fn_(fmt_buf_.data(), fmt_buf_.size() - 1, userdata_);
+            int ret = push_fn_(fmt_buf_.data(), fmt_buf_.size(), userdata_);
+    
+            if (ret == -2) {
+                if (overflow_policy_ == SinkOverflowPolicy::DROP_NEWEST) {
+                    return; 
+                }
+                
+            }
+            (void)ret;
+        }
+    
+        void flush_() override {
+            if (flush_fn_) flush_fn_(userdata_);
+        }
+    
+    private:
+        SinkPushFn          push_fn_;
+        SinkFlushFn         flush_fn_;
+        void*               userdata_;
+        SinkOverflowPolicy  overflow_policy_;
+        spdlog::memory_buf_t fmt_buf_;
+    };
+    
+}
+
+
+
 namespace spdlog_internal {
 
     class MaxSinkLevel : public spdlog::sinks::sink {
         public:
-            MaxSinkLevel(spdlog::sink_ptr sink, spdlog::level::level_enum max_level);
+            MaxSinkLevel(spdlog::sink_ptr sink, spdlog::level::level_enum max_level)
+                    : sink_(std::move(sink)), max_level_(max_level) {}
 
-            void log(const spdlog::details::log_msg& msg) override;
-            void flush() override;
-            void set_pattern(const std::string& pattern) override;
-            void set_formatter(std::unique_ptr<spdlog::formatter> formatter) override;
-            spdlog::sink_ptr get_sink();
+            void log(const spdlog::details::log_msg& msg) override {
+                if (msg.level <= max_level_) {
+                    sink_->log(msg);
+                }
+            }
+            
+            void flush() override {
+                sink_->flush();
+            }
+
+            void set_pattern(const std::string& pattern) override {
+                sink_->set_pattern(pattern);
+            } 
+            void set_formatter(std::unique_ptr<spdlog::formatter> formatter) override {
+                sink_->set_formatter(std::move(formatter));
+            }
+            
+            spdlog::sink_ptr get_sink() {
+                return sink_;
+            }
         
         private:
             spdlog::sink_ptr sink_;
@@ -147,6 +248,12 @@ namespace spdlog_internal {
         std::string message= format_str(fmt_str, args);
         va_end(args);
         return message;
+    }
+
+    inline std::shared_ptr<spdlog::sinks::stdout_color_sink_mt> get_console_sink() {
+        static auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        sink->set_level(spdlog::level::trace); 
+        return sink;
     }
 
     inline spdlog::source_loc py_caller_loc() {
@@ -316,134 +423,518 @@ namespace spdlog_internal {
     }
 }
 
+// ==============================================================================================================
 
-class LoggerFactory {
-public:
-    LoggerFactory();
+class LoggerRegistry {
+    public:
+        static void set_default(std::shared_ptr<spdlog::logger> logger) {
+            get_instance().default_logger_ = logger;
+        }
 
-    LoggerFactory& set_level(spdlog::level::level_enum level);
+        static std::shared_ptr<spdlog::logger> get_logger(const std::string& logger_name= "", bool fallback_to_default = true) {    
+            std::shared_ptr<spdlog::logger> logger_;
+            if (!logger_name.empty()) {
+                logger_ = spdlog::get(logger_name);
+        
+                if(!logger_ && !fallback_to_default) {
+                    return spdlog_internal::get_null_logger();
+                }
+            } else {
+                logger_ = get_instance().default_logger_;
+            }
+        
+            if (!logger_) {
+                return spdlog_internal::get_null_logger();
+            }
+        
+            return logger_;
+        }
 
-    LoggerFactory& add_stdout_handler(
-        bool color, 
-        const std::string& pattern,
-        spdlog::level::level_enum level = spdlog::level::trace, 
-        spdlog::level::level_enum max_level = spdlog::level::info
-    );
+    private:
+        static LoggerRegistry& get_instance() {
+            static LoggerRegistry instance;
+            return instance;
+        }
 
-    LoggerFactory& add_stderr_handler(
-        bool color, 
-        const std::string& pattern, 
-        spdlog::level::level_enum level = spdlog::level::warn
-    );
 
-    LoggerFactory& add_basic_console_handler(
-        bool color, 
-        const std::string& pattern, 
-        spdlog::level::level_enum level = spdlog::level::trace
-    );
-    
-    LoggerFactory& add_console_handler(
-        bool color, 
-        const std::string& pattern,
-        spdlog::level::level_enum max_stdout_level = spdlog::level::info, 
-        spdlog::level::level_enum min_level = spdlog::level::trace
-    );
-
-    LoggerFactory& add_file_handler(
-        const std::string& filename, 
-        const std::string& pattern,  
-        spdlog::level::level_enum level = spdlog::level::trace, 
-        bool overwrite = false
-    );
-    
-    LoggerFactory& add_rotating_file_handler(
-        const std::string& filename, 
-        std::size_t max_size, 
-        std::size_t max_files,
-        const std::string& pattern, 
-        spdlog::level::level_enum level = spdlog::level::trace
-    );
-    
-    LoggerFactory& set_color(spdlog::level::level_enum level, int color);
-    
-    LoggerFactory& set_colors(
-        int trace_color, 
-        int debug_color, 
-        int info_color, 
-        int warn_color,
-        int error_color, 
-        int critical_color
-    );
-
-    std::shared_ptr<spdlog::logger> build(const std::string& name, bool default_logger= false);
-
-private:
-    spdlog::level::level_enum g_level_;
-    std::vector<spdlog::sink_ptr> sinks_;
-    
-    std::vector<std::shared_ptr<spdlog::sinks::ansicolor_sink<spdlog::details::console_mutex>>> color_sinks_;
+        std::shared_ptr<spdlog::logger> default_logger_;
 };
 
+// ==============================================================================================================
 
+class LoggerFactory {
+    public:
+        LoggerFactory() : g_level_(spdlog::level::trace) {}
+
+        LoggerFactory& set_level(spdlog::level::level_enum level) {
+            g_level_ = static_cast<spdlog::level::level_enum>(level);
+            return *this;
+        }
+
+        LoggerFactory& add_stdout_handler(
+            bool color, 
+            const std::string& pattern,
+            spdlog::level::level_enum level = spdlog::level::trace, 
+            spdlog::level::level_enum max_level = spdlog::level::info
+        ) {
+            spdlog::sink_ptr sink;
+            if (color){
+                //auto stdout_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+                auto stdout_sink = std::make_shared<spdlog::sinks::ansicolor_stdout_sink_mt>();
+                color_sinks_.push_back(stdout_sink);
+                sink = stdout_sink;
+            } else {
+                sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+            }
+
+            sink->set_pattern(pattern);
+            sink->set_level(level);
+
+            auto filtered_sink = std::make_shared<spdlog_internal::MaxSinkLevel>(sink, max_level);
+            sinks_.push_back(filtered_sink);
+            return *this;
+        } 
+
+        LoggerFactory& add_stderr_handler(
+            bool color, 
+            const std::string& pattern, 
+            spdlog::level::level_enum level = spdlog::level::warn
+        ) {
+            spdlog::sink_ptr sink;
+
+            if (color) {
+                //auto err_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+                auto err_sink = std::make_shared<spdlog::sinks::ansicolor_stdout_sink_mt>();
+                color_sinks_.push_back(err_sink);
+                sink = err_sink;
+            } else {
+                sink = std::make_shared<spdlog::sinks::stderr_sink_mt>();
+            }
+
+            sink->set_pattern(pattern);
+            sink->set_level(level);
+
+            sinks_.push_back(sink); 
+            return *this;  
+        } 
+
+        LoggerFactory& add_basic_console_handler(
+            bool color, 
+            const std::string& pattern, 
+            spdlog::level::level_enum level = spdlog::level::trace
+        ) {
+            spdlog::sink_ptr sink;
+            if(color) {
+                //auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+                auto console_sink = std::make_shared<spdlog::sinks::ansicolor_stdout_sink_mt>();
+                color_sinks_.push_back(console_sink);
+                sink = console_sink;
+            } else {
+                sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
+            }
+
+            sink->set_pattern(pattern);
+            sink->set_level(level);
+
+            sinks_.push_back(sink); 
+            return *this;           
+        }
+
+        LoggerFactory& add_console_handler(
+            bool color, 
+            const std::string& pattern,
+            spdlog::level::level_enum max_stdout_level = spdlog::level::info, 
+            spdlog::level::level_enum min_level = spdlog::level::trace
+        ) {
+            add_stdout_handler(color, pattern, min_level, max_stdout_level);
+
+            int stderr_min_level = static_cast<int>(max_stdout_level) + 1;
+
+            if (stderr_min_level > static_cast<int>(spdlog::level::critical)) {
+                stderr_min_level = static_cast<int>(spdlog::level::critical);
+            }
+
+            add_stderr_handler(color, pattern, static_cast<spdlog::level::level_enum>(stderr_min_level));
+
+            return *this;
+        }
+
+        LoggerFactory& add_file_handler(
+            const std::string& filename, 
+            const std::string& pattern,  
+            spdlog::level::level_enum level = spdlog::level::trace, 
+            bool overwrite = false
+        ) {
+
+            auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt> (filename, overwrite);
+            file_sink->set_pattern(pattern);
+            file_sink->set_level(level);
+            sinks_.push_back(file_sink);
+            return *this;
+        }
+
+        LoggerFactory& add_rotating_file_handler(
+            const std::string& filename, 
+            std::size_t max_size, 
+            std::size_t max_files,
+            const std::string& pattern, 
+            spdlog::level::level_enum level = spdlog::level::trace
+        ) {
+
+            auto rotating_file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt> (filename, max_size, max_files);
+            rotating_file_sink->set_pattern(pattern);
+            rotating_file_sink->set_level(level);
+            sinks_.push_back(rotating_file_sink);
+            return *this;
+        }
+
+        LoggerFactory& add_daily_file_handler(
+            const std::string& filename,
+            int rotation_hour,
+            int rotation_minute,
+            const std::string& pattern,
+            spdlog::level::level_enum level = spdlog::level::trace,
+            bool truncate = false,
+            uint16_t max_files = 0
+        ) {
+
+            auto daily_sink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(
+                filename, rotation_hour, rotation_minute, truncate, max_files
+            );
+            daily_sink->set_pattern(pattern);
+            daily_sink->set_level(level);
+            sinks_.push_back(daily_sink);
+            return *this;
+        }
+
+        LoggerFactory& add_custom_sink_handler(
+            SinkPushFn          push_fn,
+            SinkFlushFn         flush_fn,
+            void*               userdata,
+            SinkOverflowPolicy  overflow_policy,
+            spdlog::level::level_enum level,
+            const std::string&  pattern
+        ) {
+
+            auto sink = std::make_shared<sink_adapter::SinkAdapter>(
+                push_fn, flush_fn, userdata, overflow_policy
+            );
+            sink->set_level(level);
+            sink->set_pattern(pattern);
+            sinks_.push_back(sink);
+            return *this;
+        }
+
+        LoggerFactory& set_color(spdlog::level::level_enum level, int color) {
+            std::string color_code;
+        
+            if ((color >= 30 && color <= 37) || (color >= 90 && color <= 97)) {
+                color_code = std::string("\033[") + std::to_string(color) + "m";
+            } else if (color >= 0 && color <= 255) {
+                color_code = std::string("\033[38;5;") + std::to_string(color) + "m";
+            } else {
+                return *this;
+            }
+        
+            for (auto& color_sink : color_sinks_) {
+                color_sink->set_color(level, color_code);
+            }
+        
+            return *this;
+        }
+
+        LoggerFactory& set_colors(
+            int trace_color, 
+            int debug_color, 
+            int info_color, 
+            int warn_color,
+            int error_color, 
+            int critical_color
+        ) {
+
+            set_color(spdlog::level::trace, trace_color);
+            set_color(spdlog::level::debug, debug_color);
+            set_color(spdlog::level::info, info_color);
+            set_color(spdlog::level::warn, warn_color);
+            set_color(spdlog::level::err, error_color);
+            set_color(spdlog::level::critical, critical_color);
+
+            return *this;
+        }
+
+        std::shared_ptr<spdlog::logger> build(const std::string& name, bool default_logger= false) {
+            auto logger = std::make_shared<spdlog::logger>(name, sinks_[0]);
+        
+            for (size_t i= 1; i < sinks_.size(); i++) {
+                logger->sinks().push_back(sinks_[i]);
+            }
+
+            logger->set_level(static_cast<spdlog::level::level_enum>(g_level_));
+            spdlog::register_logger(logger);
+        
+            if (default_logger) {
+                //spdlog::set_default_logger(logger);
+                LoggerRegistry::set_default(logger);
+            }
+            return logger;
+        }
+
+    private:
+        spdlog::level::level_enum g_level_;
+        std::vector<spdlog::sink_ptr> sinks_;
+
+        std::vector<std::shared_ptr<spdlog::sinks::ansicolor_sink<spdlog::details::console_mutex>>> color_sinks_;
+};
+
+// ==============================================================================================================
 
 class SpdLogger {
 public:
 
-    SpdLogger();
+    SpdLogger() : _logger(spdlog_internal::get_null_logger()) {}
 
-    explicit SpdLogger(std::shared_ptr<spdlog::logger> logger);
+    explicit SpdLogger(std::shared_ptr<spdlog::logger> logger)
+                    : _logger(logger) {}
 
     std::shared_ptr<spdlog::logger>& get_logger() { return _logger; }  
     const std::shared_ptr<spdlog::logger>& get_logger() const { return _logger; }
 
-    void trace(const char* msg, ...);
-    void trace(int color, const char* msg, ...);
-    void trace(int fg_color, int bg_color, const char* msg, ...);
-    void trace(int fg_color, int bg_color, int effect, const char* msg, ...);
+    void trace(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->trace(message);
+    }
+    
+    void trace(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::trace, color, msg, args);
+        va_end(args); 
+    }
 
-    void debug(const char* msg, ...);
-    void debug(int color, const char* msg, ...);
-    void debug(int fg_color, int bg_color, const char* msg, ...);
-    void debug(int fg_color, int bg_color, int effect, const char* msg, ...);
+    void trace(int fg_color, int bg_color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::trace, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
 
-    void info(const char* msg, ...);
-    void info(int color, const char* msg, ...);
-    void info(int fg_color, int bg_color, const char* msg, ...);
-    void info(int fg_color, int bg_color, int effect, const char* msg, ...);
+    void trace(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::trace, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
 
-    void warn(const char* msg, ...);
-    void warn(int color, const char* msg, ...);
-    void warn(int fg_color, int bg_color, const char* msg, ...);
-    void warn(int fg_color, int bg_color, int effect, const char* msg, ...);
 
-    void error(const char* msg, ...);
-    void error(int color, const char* msg, ...);
-    void error(int fg_color, int bg_color, const char* msg, ...);
-    void error(int fg_color, int bg_color, int effect, const char* msg, ...);
+    void debug(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->debug(message);
+    }
 
-    void critical(const char* msg, ...);
-    void critical(int color, const char* msg, ...);
-    void critical(int fg_color, int bg_color, const char* msg, ...);
-    void critical(int fg_color, int bg_color, int effect, const char* msg, ...);
+    void debug(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::debug, color, msg, args);
+        va_end(args); 
+    }
+
+    void debug(int fg_color, int bg_color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::debug, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
+
+    void debug(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::debug, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
+
+
+    void info(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->info(message);           
+    }
+
+    void info(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::info, color, msg, args);
+        va_end(args); 
+    }
+
+    void info(int fg_color, int bg_color, const char* msg, ...)  {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::info, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
+
+    void info(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::info, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
+
+
+    void warn(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->warn(message);
+    }
+
+    void warn(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::warn, color, msg, args);
+        va_end(args); 
+    }
+
+    void warn(int fg_color, int bg_color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::warn, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
+
+    void warn(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::warn, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
+
+
+    void error(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->error(message);
+    }
+
+    void error(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::err, color, msg, args);
+        va_end(args); 
+    }
+
+    void error(int fg_color, int bg_color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::err, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
+
+    void error(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::err, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
+
+
+    void critical(const char* msg, ...) {
+        va_list args;
+        va_start (args, msg);
+        std::string message= spdlog_internal::format_str(msg, args);
+        va_end(args);
+        _logger->critical(message);
+    }
+
+    void critical(int color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg(spdlog::level::critical, color, msg, args);
+        va_end(args);            
+    }
+
+    void critical(int fg_color, int bg_color, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::critical, fg_color, bg_color, -1, msg, args);
+        va_end(args);            
+    }
+
+    void critical(int fg_color, int bg_color, int effect, const char* msg, ...) {
+        va_list args;
+        va_start(args, msg);
+        color_msg_bg(spdlog::level::critical, fg_color, bg_color, effect, msg, args);
+        va_end(args);            
+    }
 
 
 private:
     std::shared_ptr<spdlog::logger> _logger;
     
-    void color_msg(spdlog::level::level_enum level, int color, const char* msg, va_list args);
-    void color_msg_bg(spdlog::level::level_enum level, int fg_color, int bg_color, int effect,  const char* msg, va_list args);
+    void color_msg(spdlog::level::level_enum level, int color, const char* msg, va_list args) {
+        std::string _msg = spdlog_internal::format_str(msg, args);
+        std::string _colored_msg = spdlog_internal::format_color(color, _msg.c_str());
+    
+        spdlog::details::log_msg console_msg(_logger->name(), level, _colored_msg);
+        spdlog::details::log_msg file_msg(_logger->name(), level, _msg);
+    
+        for (auto sink : _logger->sinks()) {
+            if (sink->should_log(level)) {
+                if (spdlog_internal::is_console(sink)) {
+                    sink->log(console_msg);
+                } else {
+                    sink->log(file_msg);
+                }
+            }
+        }
+    }
+
+    void color_msg_bg(spdlog::level::level_enum level, int fg_color, int bg_color, int effect,  const char* msg, va_list args) {
+        std::string _msg = spdlog_internal::format_str(msg, args);
+        std::string _colored_msg = spdlog_internal::format_color_bg(fg_color, bg_color, effect,  _msg.c_str());
+    
+        spdlog::details::log_msg console_msg(_logger->name(), level, _colored_msg);
+        spdlog::details::log_msg file_msg(_logger->name(), level, _msg);
+    
+        for (auto sink : _logger->sinks()) {  
+            if (sink->should_log(level)) {              
+                if (spdlog_internal::is_console(sink)) {
+                    sink->log(console_msg);
+                } else {
+                    sink->log(file_msg);
+                }
+            }               
+            
+        }
+    }
 };
 
+// ==============================================================================================================
 
-class LoggerRegistry {
-    public:
-        static void set_default(std::shared_ptr<spdlog::logger> logger);
-        static std::shared_ptr<spdlog::logger> get_logger(const std::string& logger_name= "", bool fallback_to_default = true);
+void enable_internal_logger(const std::string& name, spdlog::level::level_enum level, const std::string& pattern) {
+    auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+    sink->set_level(level);
+    sink->set_pattern(pattern);
+    auto logger = std::make_shared<spdlog::logger>(name, sink);
+    logger->set_level(level);
+    spdlog::register_logger(logger); 
+}
 
-    private:
-        static LoggerRegistry& get_instance();
-        std::shared_ptr<spdlog::logger> default_logger_;
-};
+void disable_internal_logger(const std::string& name) {
+    spdlog::drop(name);              
+}
+
 
 // ==============================================================================================================
 
@@ -664,6 +1155,7 @@ do { \
     } while(0)
 
 // ==============================================================================================================
+
 
 
 #define TRACE(fmt, ...)\
@@ -899,4 +1391,8 @@ do { \
 
 #define CRITICAL_PY_LOG(msg)\
     SPDLOG_LOG_PY_LOGGER_D_IMPL(spdlog::level::critical, msg)
+
+
+// ==============================================================================================================
+
     

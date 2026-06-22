@@ -3,27 +3,34 @@ on:
   push:
     tags:
       - "v*"
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
   build_wheels:
-    if: github.event_name != 'pull_request'
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            cibw_archs: "x86_64"
-          - os: ubuntu-24.04-arm
-            cibw_archs: "aarch64"
-          - os: windows-latest
-            cibw_archs: "AMD64"
-          - os: macos-15
-            cibw_archs: "arm64"
+        matrix:
+          include:
+              - os: ubuntu-26.04
+                cibw_archs: "x86_64"
+        
+              - os: ubuntu-26.04-arm
+                cibw_archs: "aarch64"
+        
+              - os: windows-2025-vs2026
+                cibw_archs: "AMD64"
+                cmake_generator: "Visual Studio 18 2026"
+        
+              - os: windows-11-vs2026-arm
+                cibw_archs: "ARM64"
+                cmake_generator: "Visual Studio 18 2026"
+        
+              - os: macos-15
+                cibw_archs: "arm64"
+        
+              - os: macos-15-intel
+                cibw_archs: "x86_64"
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +49,11 @@ jobs:
           CIBW_BUILD: cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*
           CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_* pp* *-macosx_universal2*"
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
-          CIBW_BEFORE_BUILD: pip install setuptools wheel Cython cmake
+          CIBW_BEFORE_BUILD: pip install setuptools wheel Cython cmake delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
+            delvewheel repair -w {dest_dir}
+            --add-path "%CYKIT_OPENSSL_BIN_DIR%"
+            {wheel}
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: python -c "import cykit; from cykit.cylogger import Logger; print('Import successful')"
 
@@ -53,7 +64,7 @@ jobs:
 
   build_sdist:
     name: Build source distribution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +88,7 @@ jobs:
 
   upload_pypi:
     needs: [build_wheels, build_sdist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       id-token: write
@@ -95,23 +106,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
-
-  upload_test_pypi:
-    needs: [build_wheels, build_sdist]
-    runs-on: ubuntu-latest
-    if: false
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cibw-*
-          path: dist
-          merge-multiple: true
-
-      - name: Publish to Test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          verbose: true
-          skip-existing: true
