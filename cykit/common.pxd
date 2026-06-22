@@ -128,30 +128,32 @@ cdef extern from *:
 
 cdef extern from * nogil:
     """
-    #if defined(_MSC_VER)
+    #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
         #include <immintrin.h>
-        static __forceinline void cpu_pause(void) {
+        static __forceinline void cpu_pause(void) noexcept {
             _mm_pause();
         }
-
     #elif defined(__i386__) || defined(__x86_64__)
         #include <immintrin.h>
-        static __inline__ void cpu_pause(void) {
+        static __inline__ void cpu_pause(void) noexcept {
             __builtin_ia32_pause();
         }
-
-    #elif defined(__aarch64__) || defined(__arm__)
-        static __inline__ void cpu_pause(void) {
-            __asm__ __volatile__("yield");
+    #elif defined(_MSC_VER) && defined(_M_ARM64)
+        #include <intrin.h>
+        static __forceinline void cpu_pause(void) noexcept {
+            __yield();
         }
-
+    #elif defined(__aarch64__) || defined(__arm__) || defined(__arm64__)
+        static __inline__ void cpu_pause(void) noexcept {
+            __asm__ __volatile__("yield" ::: "memory");
+        }
     #else
-        static __inline__ void cpu_pause(void) {
+        static __inline__ void cpu_pause(void) noexcept {
             __asm__ __volatile__("" ::: "memory");
         }
     #endif
     """
-    void cpu_pause() noexcept
+    void cpu_pause() noexcept nogil
 
 
 cdef extern from *:
