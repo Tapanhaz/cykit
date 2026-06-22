@@ -1,4 +1,13 @@
+import sys
 import os
+
+if sys.platform == "win32":
+    from cykit._build.config import config
+
+    _bin = config._get_openssl_bin_dir()
+    if _bin:
+        os.add_dll_directory(_bin)
+
 from cykit.cylogger import Logger, LogLevel
 
 logger = Logger("default", level=LogLevel.DEBUG)
