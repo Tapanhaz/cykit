@@ -61,6 +61,7 @@ cdef struct BenchShared:
     QueueImpl*      q
     atomic[uint64_t] start_flag
     atomic[uint64_t] stop_flag
+    atomic[uint64_t] consumers_ready
     double          duration_s
 
 cdef struct ProducerCtx:
@@ -113,6 +114,7 @@ cdef void* _consumer_thread(void* arg) noexcept nogil:
     if q.fn_register_consumer != NULL:
         if q.fn_register_consumer(<void*>q, &ctx.rid) != Q_OK:
             return NULL
+        sh.consumers_ready.fetch_add(1, memory_order_release)
 
     while sh.start_flag.load(memory_order_acquire) == 0:
         pass
@@ -232,6 +234,7 @@ cdef class _BenchRunner:
         self._shared.duration_s = duration_s
         self._shared.start_flag.store(0, memory_order_relaxed)
         self._shared.stop_flag.store(0, memory_order_relaxed)
+        self._shared.consumers_ready.store(0, memory_order_relaxed)
 
         for i in range(n_prod):
             self._prod_ctx[i].shared = &self._shared
@@ -261,6 +264,10 @@ cdef class _BenchRunner:
             prod_threads[i] = make_thread(
                 _producer_thread, <void*>&self._prod_ctx[i]
             )
+            
+        if self._q.fn_register_consumer != NULL:
+            while self._shared.consumers_ready.load(memory_order_acquire) < <uint64_t>self._n_cons:
+                usleep_(100)
 
         t0 = _now_sec()
         self._shared.start_flag.store(1, memory_order_release)
