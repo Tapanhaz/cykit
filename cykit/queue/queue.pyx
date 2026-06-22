@@ -100,6 +100,18 @@ cdef inline bint _is_empty(QueueImpl* q) noexcept nogil:
 cdef inline long _elapsed_ms(timespec_* start, timespec_* now) noexcept nogil:
     return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) // 1000000
 
+cdef inline bint _all_readers_at(
+    QueueImpl* q, uint64_t mask, uint64_t target
+) noexcept nogil:
+    cdef uint64_t m = mask
+    cdef int i
+    while m:
+        i = builtin_ctzll(m)
+        if q.reader_pos[i].load(memory_order_acquire) < target:
+            return False
+        m &= m - 1
+    return True
+
 
 cdef inline uint64_t consumer_min_pos(QueueImpl* q) noexcept nogil:
     cdef:
@@ -125,19 +137,34 @@ cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
         QueueImpl*  q        = <QueueImpl*>ctx
         timespec_   start, now
         long        elapsed  = 0
-        uint64_t      t, tl
+        uint64_t      t, tl, drain_target, reg_mask
 
     if not q.running.load(memory_order_acquire):
         return 0
 
     q.flags |= F_CLOSING
 
+    if q.mode == SPMC or q.mode == MPMC:
+        drain_target = q.tail.load(memory_order_acquire)
+        reg_mask     = q.reader_active_mask.load(memory_order_acquire)
+
+
     if timeout_ms == -1:
-        while not _is_empty(q):
-            usleep_(5000)
+        if q.mode == SPMC or q.mode == MPMC:
+            while not _all_readers_at(q, reg_mask, drain_target):
+                usleep_(5000)
+        else:
+            while not _is_empty(q):
+                usleep_(5000)
     elif timeout_ms > 0:
         clock_gettime_(CLOCK_MONOTONIC_, &start)
-        while not _is_empty(q):
+        while True:
+            if q.mode == SPMC or q.mode == MPMC:
+                if _all_readers_at(q, reg_mask, drain_target):
+                    break
+            else:
+                if _is_empty(q):
+                    break
             clock_gettime_(CLOCK_MONOTONIC_, &now)
             elapsed = _elapsed_ms(&start, &now)
             if elapsed >= timeout_ms:
