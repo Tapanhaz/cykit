@@ -64,13 +64,18 @@ class BuildConfig:
         return [d for d in raw.split(";") if d and Path(d).exists()]
     
     def _get_openssl_bin_dir(self) -> str:
-        raw_path = self._parse_openssl_paths().get("OPENSSL_BIN_DIR", "")
-        if not raw_path:
+        if platform.system() != "Windows":
             return ""
-        parts = [p.strip() for p in raw_path.split(";")]
-        for part in reversed(parts):
-            if part and part.lower() not in ("optimized", "debug") and Path(part).exists():
-                return part
+        raw = self._parse_openssl_paths().get("OPENSSL_BIN_DIR", "")
+        if raw:
+            for part in reversed(raw.split(";")):
+                part = part.strip()
+                if part and part.lower() not in ("optimized", "debug") and Path(part).is_dir():
+                    return part
+        for inc in self._get_openssl_include_dirs():
+            candidate = Path(inc).parent / "bin"
+            if candidate.is_dir():
+                return str(candidate)
         return ""
 
     def _get_openssl_lib_dirs(self) -> list:
