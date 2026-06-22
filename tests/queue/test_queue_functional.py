@@ -1,12 +1,24 @@
 import pytest
 
 FUNC_TEST_NAMES = [
-    "spsc  push/pop", "spsc  try_push full", "spsc  try_pop empty",
-    "spsc  borrow/commit", "spsc  push_var/pop_var", "spsc  try_push_var full",
-    "spsc  try_pop_var empty", "spmc  fanout 1p3c", "spmc  try_pop empty",
-    "spmc  borrow/commit", "spmc  push_var/pop_var", "mpsc  3p1c total",
-    "mpsc  try_push full", "mpsc  borrow/commit", "mpsc  push_var/pop_var",
-    "mpmc  fanout 3p3c", "mpmc  try_pop empty", "mpmc  push_var/pop_var",
+    "spsc  push/pop",
+    "spsc  try_push full",
+    "spsc  try_pop empty",
+    "spsc  borrow/commit",
+    "spsc  push_var/pop_var",
+    "spsc  try_push_var full",
+    "spsc  try_pop_var empty",
+    "spmc  fanout 1p3c",
+    "spmc  try_pop empty",
+    "spmc  borrow/commit",
+    "spmc  push_var/pop_var",
+    "mpsc  3p1c total",
+    "mpsc  try_push full",
+    "mpsc  borrow/commit",
+    "mpsc  push_var/pop_var",
+    "mpmc  fanout 3p3c",
+    "mpmc  try_pop empty",
+    "mpmc  push_var/pop_var",
 ]
 
 

@@ -10,16 +10,11 @@ MESSAGES = {
     "error": "Error: occurred",
     "critical": "Critical: shutdown",
 }
-CONSOLE_RE = re.compile(
-    r"\[test\] \[(trace|debug|info|warning|error|critical)\] (.+)"
-)
+CONSOLE_RE = re.compile(r"\[test\] \[(trace|debug|info|warning|error|critical)\] (.+)")
 
 
 def console_lines(stdout):
-    return [
-        (m.group(1), m.group(2).strip())
-        for m in CONSOLE_RE.finditer(stdout)
-    ]
+    return [(m.group(1), m.group(2).strip()) for m in CONSOLE_RE.finditer(stdout)]
 
 
 def test_01_console_receives_all_levels(run_logger):
@@ -75,14 +70,12 @@ def test_06_message_content_matches_pattern(run_logger):
 def test_07_ordering_preserved_across_transports(run_logger):
     udp = sorted(run_logger["udp"].messages, key=lambda m: m["received_at"])
     assert [
-        next(lvl for lvl in LEVELS if f"[{lvl}]" in m["data"].decode())
-        for m in udp
+        next(lvl for lvl in LEVELS if f"[{lvl}]" in m["data"].decode()) for m in udp
     ] == LEVELS
 
     http = sorted(run_logger["http"].requests, key=lambda r: r["received_at"])
     assert [
-        next(lvl for lvl in LEVELS if f"[{lvl}]" in r["body"])
-        for r in http
+        next(lvl for lvl in LEVELS if f"[{lvl}]" in r["body"]) for r in http
     ] == LEVELS
 
     smtp = sorted(run_logger["smtp"].emails, key=lambda e: e["connected_at"])

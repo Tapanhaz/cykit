@@ -4,10 +4,11 @@ import os
 
 if sys.platform == "win32":
     from cykit._build.config import config
+
     _bin = config._get_openssl_bin_dir()
     if _bin:
         os.add_dll_directory(_bin)
-        
+
 import json
 import socket
 import subprocess
@@ -57,7 +58,9 @@ class TCPServer:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._handle, args=(conn, addr), daemon=True).start()
+            threading.Thread(
+                target=self._handle, args=(conn, addr), daemon=True
+            ).start()
 
     def _handle(self, conn, addr):
         connected_at = time.time()
@@ -74,12 +77,14 @@ class TCPServer:
         finally:
             conn.close()
         with self._lock:
-            self.messages.append({
-                "data": b"".join(chunks),
-                "client_port": addr[1],
-                "connected_at": connected_at,
-                "disconnected_at": time.time(),
-            })
+            self.messages.append(
+                {
+                    "data": b"".join(chunks),
+                    "client_port": addr[1],
+                    "connected_at": connected_at,
+                    "disconnected_at": time.time(),
+                }
+            )
 
     def stop(self):
         self._stop.set()
@@ -130,13 +135,15 @@ class HTTPServer:
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length).decode("utf-8", errors="replace")
                 with lock:
-                    requests.append({
-                        "path": self.path,
-                        "headers": dict(self.headers.items()),
-                        "body": body,
-                        "client_port": self.client_address[1],
-                        "received_at": time.time(),
-                    })
+                    requests.append(
+                        {
+                            "path": self.path,
+                            "headers": dict(self.headers.items()),
+                            "body": body,
+                            "client_port": self.client_address[1],
+                            "received_at": time.time(),
+                        }
+                    )
                 payload = json.dumps({"status": "received"}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -201,13 +208,15 @@ class SMTPServer:
                         raw = b"".join(lines).decode("utf-8", errors="replace")
                         headers, _, body = raw.partition("\r\n\r\n")
                         with lock:
-                            emails.append({
-                                "envelope_from": envelope["from"],
-                                "envelope_to": envelope["to"],
-                                "headers": headers,
-                                "body": body.strip(),
-                                "connected_at": connected_at,
-                            })
+                            emails.append(
+                                {
+                                    "envelope_from": envelope["from"],
+                                    "envelope_to": envelope["to"],
+                                    "headers": headers,
+                                    "body": body.strip(),
+                                    "connected_at": connected_at,
+                                }
+                            )
                         self._send(b"250 Message accepted\r\n")
                     elif upper == "QUIT":
                         self._send(b"221 Bye\r\n")
@@ -261,7 +270,7 @@ def run_logger(_servers):
         stderr=subprocess.STDOUT,
         text=True,
         timeout=RUN_PY_TIMEOUT,
-        cwd= TESTS_DIR,
+        cwd=TESTS_DIR,
     )
 
     tcp, udp, http, smtp = (_servers[k] for k in ("tcp", "udp", "http", "smtp"))
