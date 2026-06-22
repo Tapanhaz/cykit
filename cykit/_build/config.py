@@ -38,6 +38,20 @@ class BuildConfig:
             f"optimize={self.optimize})"
         )
     
+    @staticmethod
+    def _resolve_cmake_lib(raw: str) -> str:
+        parts = [p.strip() for p in raw.split(";") if p.strip()]
+        if not parts:
+            return ""
+        if parts[0].lower() not in ("optimized", "debug"):
+            return parts[0]  # plain path, pass through
+        i = 0
+        while i < len(parts) - 1:
+            if parts[i].lower() == "optimized":
+                return parts[i + 1]
+            i += 2
+        return ""
+    
     def _get_openssl_paths_file(self) -> "Path":
         return (
             self.get_package_root()
@@ -81,7 +95,10 @@ class BuildConfig:
     def _get_openssl_lib_dirs(self) -> list:
         dirs = []
         for key in ("OPENSSL_SSL_LIBRARY", "OPENSSL_CRYPTO_LIBRARY"):
-            p = self._parse_openssl_paths().get(key, "")
+            raw = self._parse_openssl_paths().get(key, "")
+            if not raw:
+                continue
+            p = self._resolve_cmake_lib(raw)
             if p:
                 d = str(Path(p).parent)
                 if d not in dirs:
@@ -91,10 +108,13 @@ class BuildConfig:
     def _get_openssl_link_names(self) -> list:
         names = []
         for key in ("OPENSSL_SSL_LIBRARY", "OPENSSL_CRYPTO_LIBRARY"):
-            p = self._parse_openssl_paths().get(key, "")
+            raw = self._parse_openssl_paths().get(key, "")
+            if not raw:
+                continue
+            p = self._resolve_cmake_lib(raw)
             if not p:
                 continue
-            stem = Path(p).stem 
+            stem = Path(p).stem
             name = stem[3:] if stem.startswith("lib") else stem
             if name not in names:
                 names.append(name)
@@ -118,7 +138,10 @@ class BuildConfig:
             return []
         objs = []
         for key in ("OPENSSL_SSL_LIBRARY", "OPENSSL_CRYPTO_LIBRARY"):
-            p = self._parse_openssl_paths().get(key, "")
+            raw = self._parse_openssl_paths().get(key, "")
+            if not raw:
+                continue
+            p = self._resolve_cmake_lib(raw)
             if p and Path(p).exists():
                 objs.append(p)
         if objs:
@@ -133,7 +156,8 @@ class BuildConfig:
         ]:
             if not str(root):
                 continue
-            for sub in ("lib/VC/x64/MD", "lib"):
+            arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+            for sub in (f"lib/VC/{arch}/MD", "lib/VC/x64/MD", "lib"):
                 for names in (("libssl.lib","libcrypto.lib"), ("ssl.lib","crypto.lib")):
                     ssl_p = root / sub / names[0]
                     cry_p = root / sub / names[1]
