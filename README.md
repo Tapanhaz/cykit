@@ -1,6 +1,6 @@
 # cykit
 
-[![PyPI version](https://badge.fury.io/py/cykit.svg)](https://badge.fury.io/py/cykit)
+[![PyPI version](https://badge.fury.io/py/cykit.svg?v=0.0.9)](https://badge.fury.io/py/cykit)
 [![Build Status](https://github.com/Tapanhaz/cykit/actions/workflows/release.yml/badge.svg)](https://github.com/Tapanhaz/cykit/actions)
 [![Python Versions](https://img.shields.io/badge/python-3.9%7C3.10%7C3.11%7C3.12%7C3.13%7C3.14-green)](https://pypi.org/project/cykit/)
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Tapanhaz/cykit/blob/main/LICENSE-MIT)
