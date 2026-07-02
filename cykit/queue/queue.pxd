@@ -54,10 +54,12 @@ cdef struct ConsumerCtx:
 
 cdef struct QueueImpl:
     atomic[uint64_t] tail
-    uint8_t[56]      pad_tail
+    #uint8_t[56]      pad_tail
+    uint8_t[120]      pad_tail
     
     atomic[uint64_t] head
-    uint8_t[56]      pad_head
+    #uint8_t[56]      pad_head
+    uint8_t[120]      pad_head
 
     size_t      capacity_mask
     size_t      slot_size
@@ -73,7 +75,8 @@ cdef struct QueueImpl:
 
     atomic[uint64_t] reader_active_mask
     atomic[uint64_t] reader_min_pos
-    uint8_t[48]      pad_bcast
+    #uint8_t[48]      pad_bcast
+    uint8_t[120]      pad_bcast
 
     atomic[uint64_t] reader_pos[64]
     
