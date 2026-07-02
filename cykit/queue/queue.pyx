@@ -137,7 +137,9 @@ cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
         QueueImpl*  q        = <QueueImpl*>ctx
         timespec_   start, now
         long        elapsed  = 0
-        uint64_t      t, tl, drain_target, reg_mask
+        uint64_t     t, tl
+        uint64_t    drain_target = 0
+        uint64_t    reg_mask = 0
 
     if not q.running.load(memory_order_acquire):
         return 0
