@@ -177,6 +177,23 @@ cdef extern from *:
     """
     int builtin_ctzll(unsigned long long x) noexcept nogil
 
+cdef extern from *:
+    """
+    #include <new>
+
+    template<typename T>
+    static inline void placement_new(void* p) noexcept {
+        new (p) T();
+    }
+
+    template<typename T>
+    static inline void placement_destroy(void* p) noexcept {
+        static_cast<T*>(p)->~T();
+    }
+    """
+    void placement_new[T](void* p) noexcept nogil
+    void placement_destroy[T](void* p) noexcept nogil
+
 
 cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
     return n != 0 and (n & (n - 1)) == 0
