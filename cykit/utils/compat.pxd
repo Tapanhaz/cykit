@@ -1,3 +1,5 @@
+from libc.stdint cimport uint64_t
+
 
 cdef extern from *:
     """
@@ -39,6 +41,34 @@ cdef extern from *:
         #define CLOCK_MONOTONIC_ CLOCK_MONOTONIC
         #define usleep_ usleep
     #endif
+
+    #if defined(_WIN32)
+        static inline uint64_t now_ns(void) {
+            static LARGE_INTEGER freq = {0};
+            LARGE_INTEGER counter;
+            if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&counter);
+            uint64_t sec = (uint64_t)(counter.QuadPart / freq.QuadPart);
+            uint64_t rem = (uint64_t)(counter.QuadPart % freq.QuadPart);
+            return sec * 1000000000ULL + (rem * 1000000000ULL) / (uint64_t)freq.QuadPart;
+        }
+    #elif defined(__APPLE__)
+        static inline uint64_t now_ns(void) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+            return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+        }
+    #else
+        static inline uint64_t now_ns(void) {
+            struct timespec ts;
+        #ifdef CLOCK_MONOTONIC_RAW
+            clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+        #else
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+        #endif
+            return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+        }
+    #endif
     """
     ctypedef struct timespec_:
         long long tv_sec
@@ -46,6 +76,8 @@ cdef extern from *:
 
     int clock_gettime_(int clock_id, timespec_* ts) noexcept nogil
     void usleep_(unsigned int us) noexcept nogil
+
+    uint64_t now_ns() noexcept nogil
 
     cdef enum:
         CLOCK_MONOTONIC_
