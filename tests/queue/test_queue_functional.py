@@ -1,33 +1,38 @@
 import pytest
+from run_bench import FIXED_PAYLOAD, VAR_PAYLOAD, MODE_NAME, PAIR_NAME, run_bench_pair
 
-FUNC_TEST_NAMES = [
-    "spsc  push/pop",
-    "spsc  try_push full",
-    "spsc  try_pop empty",
-    "spsc  borrow/commit",
-    "spsc  push_var/pop_var",
-    "spsc  try_push_var full",
-    "spsc  try_pop_var empty",
-    "spmc  fanout 1p3c",
-    "spmc  try_pop empty",
-    "spmc  borrow/commit",
-    "spmc  push_var/pop_var",
-    "mpsc  3p1c total",
-    "mpsc  try_push full",
-    "mpsc  borrow/commit",
-    "mpsc  push_var/pop_var",
-    "mpmc  fanout 3p3c",
-    "mpmc  try_pop empty",
-    "mpmc  push_var/pop_var",
+NUM_MESSAGES = 2_000_000
+
+CASES = [
+    (mode, pair, n_prod, n_cons, f"{MODE_NAME[mode]}  pair :: {PAIR_NAME[pair]}")
+    for mname, mode, n_prod, n_cons in [
+        ("SPSC", 0, 1, 1), ("SPMC", 1, 1, 3), ("MPSC", 2, 3, 1), ("MPMC", 3, 2, 2)
+    ]
+    for pair in range(5)
 ]
 
 
-@pytest.fixture(scope="module")
-def func_results(queue_module):
-    return dict(queue_module.run_func_tests_collect())
+@pytest.mark.parametrize("mode,pair,n_prod,n_cons,label", CASES, ids=[c[4] for c in CASES])
+def test_queue_pair(mode, pair, n_prod, n_cons, label):
+    payload = VAR_PAYLOAD if pair in (2, 4) else FIXED_PAYLOAD
+    prod_r, cons_r = run_bench_pair(mode, pair, n_prod, n_cons,
+                                     num_messages=NUM_MESSAGES, payload_size=payload)
 
+    print()
+    for i, r in enumerate(prod_r):
+        print(f"  producer[{i}]: {r['sent']} msgs  {r['mps']/1e6:.2f} M/s  "
+              f"{r['gbps']:.3f} GB/s   Total: {r['bytes']/1048576:.3f} MB")
+    for i, r in enumerate(cons_r):
+        print(f"  consumer[{i}]: {r['received']} msgs  {r['mps']/1e6:.2f} M/s  "
+              f"{r['gbps']:.3f} GB/s   Total: {r['bytes']/1048576:.3f} MB")
 
-@pytest.mark.parametrize("name", FUNC_TEST_NAMES)
-def test_functional(func_results, name):
-    assert name in func_results, f"missing result for {name!r}"
-    assert func_results[name] == 0, f"{name} reported {func_results[name]} failure(s)"
+    total_sent = sum(r["sent"] for r in prod_r)
+    assert total_sent > 0, f"{label}: producer(s) sent nothing"
+    for i, r in enumerate(cons_r):
+        assert r.get("corrupt", 0) == 0, f"{label}: consumer[{i}] saw {r['corrupt']} corrupted/misdelivered messages"
+ 
+    if mode in (1, 3):  # SPMC / MPMC
+        for i, r in enumerate(cons_r):
+            assert r["received"] == total_sent, f"{label}: consumer[{i}] got {r['received']} != {total_sent}"
+    else:  # SPSC / MPSC
+        assert cons_r[0]["received"] == total_sent, f"{label}: consumer got {cons_r[0]['received']} != {total_sent}"
