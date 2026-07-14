@@ -15,17 +15,23 @@ from libc.string  cimport memcpy, memset
 from libc.stdlib  cimport free, realloc
 
 from cykit.common cimport (
-    atomic_notify_one,
-    atomic_notify_all,
     atomic_thread_fence,
-    atomic_wait,
     memory_order_acquire,
     memory_order_release,
     memory_order_relaxed,
     aligned_alloc_,
     aligned_free_,
     cpu_pause,
-    builtin_ctzll
+    builtin_ctzll,
+    placement_new,
+    placement_destroy
+)
+
+from cykit.utils.atomic cimport (
+    atomic_wait, 
+    atomic_notify_one, 
+    atomic_notify_all, 
+    CACHELINE
 )
 
 from cykit.utils.signal_handler cimport (
@@ -42,7 +48,6 @@ from cykit.utils.compat cimport (
     usleep_,
     timespec_,
 )
-
 
 
 cdef extern from * nogil:
@@ -87,27 +92,35 @@ cdef void queue_notify(void* ctx) noexcept nogil:
     q.running.store(0, memory_order_release)
     q.tail.fetch_add(1, memory_order_relaxed)
     q.head.fetch_add(1, memory_order_relaxed)
-    atomic_notify_all(&q.tail)
-    atomic_notify_all(&q.head)
-    atomic_notify_all(&q.reader_min_pos)
+    atomic_notify_all(&q.tail, &q.tail_wm)
+    atomic_notify_all(&q.head, &q.head_wm)
+    atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
 
 cdef inline bint _is_empty(QueueImpl* q) noexcept nogil:
     if q.mode == SPMC or q.mode == MPMC:
         return consumer_min_pos(q) == q.tail.load(memory_order_acquire)
-    return q.head.load(memory_order_relaxed) == q.tail.load(memory_order_relaxed)
+    return q.head.load(memory_order_acquire) == q.tail.load(memory_order_acquire)
 
-cdef inline long _elapsed_ms(timespec_* start, timespec_* now) noexcept nogil:
+cdef inline uint64_t _slowest_consumer_pos(QueueImpl* q) noexcept nogil:
+    if q.mode == SPMC or q.mode == MPMC:
+        return consumer_min_pos(q)
+    return q.head.load(memory_order_acquire)
+ 
+cdef inline long elapsed_ms(timespec_* start, timespec_* now) noexcept nogil:
     return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) // 1000000
+
 
 cdef inline bint _all_readers_at(
     QueueImpl* q, uint64_t mask, uint64_t target
 ) noexcept nogil:
-    cdef uint64_t m = mask
-    cdef int i
+    cdef:
+        uint64_t m = mask
+        int i
+
     while m:
         i = builtin_ctzll(m)
-        if q.reader_pos[i].load(memory_order_acquire) < target:
+        if q.reader_pos[i].value.load(memory_order_acquire) < target:
             return False
         m &= m - 1
     return True
@@ -115,21 +128,70 @@ cdef inline bint _all_readers_at(
 
 cdef inline uint64_t consumer_min_pos(QueueImpl* q) noexcept nogil:
     cdef:
-        uint64_t mask = q.reader_active_mask.load(memory_order_acquire)
+        uint64_t mask = q.reader_active_mask.value.load(memory_order_acquire)
         uint64_t min_pos = q.tail.load(memory_order_acquire)
         uint64_t pos
         int i
 
     while mask:
         i = builtin_ctzll(mask)
-        pos = q.reader_pos[i].load(memory_order_acquire)
+        pos = q.reader_pos[i].value.load(memory_order_acquire)
         if pos < min_pos:
             min_pos = pos
         mask &= mask - 1
     return min_pos
 
+
 cdef inline void consumer_update_min(QueueImpl* q) noexcept nogil:
-    q.reader_min_pos.store(consumer_min_pos(q), memory_order_release)
+    cdef:
+        uint64_t new_min = consumer_min_pos(q)
+        uint64_t old_min = q.reader_min_pos.load(memory_order_relaxed)
+    
+    while new_min > old_min:
+        if _cas_u64(&q.reader_min_pos, &old_min, new_min):
+            break
+        cpu_pause()
+
+
+cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
+            bint needs_publish, uint8_t init_flags) noexcept nogil:
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        size_t i
+
+    if capacity == 0 or (capacity & (capacity - 1)) != 0:
+        return Q_ERR
+    if slot_size == 0:
+        return Q_ERR
+
+    placement_new[QueueImpl](ctx)
+
+    q.running.store(1, memory_order_relaxed)
+    q.flags.store(init_flags, memory_order_relaxed)
+    q.capacity_mask = capacity - 1
+    q.slot_size     = slot_size
+
+    q.slots     = <QueueSlot*>aligned_alloc_(CACHELINE, capacity * sizeof(QueueSlot))
+    q.slot_bufs = <char*>aligned_alloc_(CACHELINE, capacity * slot_size)
+    if q.slots == NULL or q.slot_bufs == NULL:
+        return Q_ERR
+
+    memset(q.slot_bufs, 0, capacity * slot_size)
+    for i in range(capacity):
+        q.slots[i].buf          = q.slot_bufs + i * slot_size
+        q.slots[i].size         = 0
+        q.slots[i].seq_id       = 0
+        q.slots[i].chunk_idx    = 0
+        q.slots[i].total_chunks = 0
+
+    if needs_publish:
+        q.publish = <PublishEntry*>aligned_alloc_(CACHELINE, capacity * sizeof(PublishEntry))
+        if q.publish == NULL:
+            return Q_ERR
+        for i in range(capacity):
+            q.publish[i].seq.store(i, memory_order_relaxed)
+
+    return Q_OK
 
 
 cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
@@ -137,113 +199,111 @@ cdef int queue_close(void* ctx, long timeout_ms = 0) noexcept nogil:
         QueueImpl*  q        = <QueueImpl*>ctx
         timespec_   start, now
         long        elapsed  = 0
-        uint64_t     t, tl
-        uint64_t    drain_target = 0
-        uint64_t    reg_mask = 0
+
 
     if not q.running.load(memory_order_acquire):
         return 0
-
-    q.flags |= F_CLOSING
-
-    if q.mode == SPMC or q.mode == MPMC:
-        drain_target = q.tail.load(memory_order_acquire)
-        reg_mask     = q.reader_active_mask.load(memory_order_acquire)
-
-
-    if timeout_ms == -1:
-        if q.mode == SPMC or q.mode == MPMC:
-            while not _all_readers_at(q, reg_mask, drain_target):
-                usleep_(5000)
-        else:
-            while not _is_empty(q):
-                usleep_(5000)
-    elif timeout_ms > 0:
-        clock_gettime_(CLOCK_MONOTONIC_, &start)
-        while True:
-            if q.mode == SPMC or q.mode == MPMC:
-                if _all_readers_at(q, reg_mask, drain_target):
-                    break
-            else:
-                if _is_empty(q):
-                    break
-            clock_gettime_(CLOCK_MONOTONIC_, &now)
-            elapsed = _elapsed_ms(&start, &now)
-            if elapsed >= timeout_ms:
-                break
-            usleep_(5000)
+        
+    q.flags.fetch_or(F_CLOSING, memory_order_release)
     
-    if q.mode == MPSC: # or q.mode == MPMC:
-        t = q.head.load(memory_order_acquire)
-        tl = q.tail.load(memory_order_acquire)
-        while t < tl:
-            idx = t & q.capacity_mask
-            while q.publish[idx].seq.load(memory_order_acquire) != t + 1:
-                cpu_pause()
-            t += 1
+    if timeout_ms != 0:
+        if timeout_ms > 0:
+            clock_gettime_(CLOCK_MONOTONIC_, &start)
+        while _slowest_consumer_pos(q) < q.tail.load(memory_order_acquire):
+            if timeout_ms > 0:
+                clock_gettime_(CLOCK_MONOTONIC_, &now)
+                elapsed = elapsed_ms(&start, &now)
+                if elapsed >= timeout_ms:
+                    break
+            usleep_(200)
 
     q.running.store(0, memory_order_release)
     q.tail.fetch_add(1, memory_order_release)
     q.head.fetch_add(1, memory_order_release)
-    atomic_notify_all(&q.tail)
-    atomic_notify_all(&q.head)
-    atomic_notify_all(&q.reader_min_pos)
-    
+
+    atomic_notify_all(&q.tail, &q.tail_wm)
+    atomic_notify_all(&q.head, &q.head_wm)
+    atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+
     if q.mode == MPMC:
-        atomic_notify_all(&q.reader_active_mask)
+        atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
 
-    return 0 if _is_empty(q) else -1
 
+cdef void queue_destroy(void* ctx) noexcept nogil:
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        int i
+
+    for i in range(64):
+        if q.consumer_ctx[i].value.assemble_buf != NULL:
+            free(q.consumer_ctx[i].value.assemble_buf)
+            q.consumer_ctx[i].value.assemble_buf = NULL
+
+    if q.slots     != NULL: 
+        aligned_free_(q.slots)
+    if q.slot_bufs != NULL: 
+        aligned_free_(q.slot_bufs)
+    if q.publish   != NULL: 
+        aligned_free_(q.publish)
+
+    placement_destroy[QueueImpl](ctx)
 
 # =========================================================================
 # ===============    SPMC - MPMC REGISTER CONSUMER    =====================
 # =========================================================================
 
 cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
-    cdef QueueImpl* q = <QueueImpl*>ctx
-    cdef uint64_t mask, bit
-    cdef uint32_t i
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        uint64_t mask, bit
+        uint32_t i
 
     while True:
-        mask = q.reader_active_mask.load(memory_order_acquire)
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
         if mask == 0xFFFFFFFFFFFFFFFFULL:
             return Q_ERR
         i    = builtin_ctzll(~mask)
         bit  = (<uint64_t>1) << i
-        if _cas_u64(&q.reader_active_mask, &mask, mask | bit):
-            q.reader_pos[i].store(
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask | bit):
+            q.reader_pos[i].value.store(
                 q.tail.load(memory_order_acquire), memory_order_release
             )
 
-            q.consumer_ctx[i].expected_seq = 0
-            q.consumer_ctx[i].expected_chunk = 0
-            q.consumer_ctx[i].assemble_buf = NULL
-            q.consumer_ctx[i].assemble_used = 0
-            q.consumer_ctx[i].assemble_cap = 0
+            q.consumer_ctx[i].value.expected_seq = 0
+            q.consumer_ctx[i].value.expected_chunk = 0
+            q.consumer_ctx[i].value.assemble_buf = NULL
+            q.consumer_ctx[i].value.assemble_used = 0
+            q.consumer_ctx[i].value.assemble_cap = 0
+
+            q.consumer_ctx[i].value.discard_count = 0
+            q.consumer_ctx[i].value.resync_count = 0
 
             out_id[0] = i
             _tls_set_rid(i)
             consumer_update_min(q)
-            atomic_notify_all(&q.reader_min_pos)
+            atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+            atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
             return Q_OK
 
 
 cdef void unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
-    cdef QueueImpl* q   = <QueueImpl*>ctx
-    cdef uint64_t mask, bit
+    cdef:
+        QueueImpl* q   = <QueueImpl*>ctx
+        uint64_t mask, bit
+
     bit = (<uint64_t>1) << reader_id
 
-    if q.consumer_ctx[reader_id].assemble_buf != NULL:
-        free(q.consumer_ctx[reader_id].assemble_buf)
-        q.consumer_ctx[reader_id].assemble_buf = NULL
-        q.consumer_ctx[reader_id].assemble_cap = 0
+    if q.consumer_ctx[reader_id].value.assemble_buf != NULL:
+        free(q.consumer_ctx[reader_id].value.assemble_buf)
+        q.consumer_ctx[reader_id].value.assemble_buf = NULL
+        q.consumer_ctx[reader_id].value.assemble_cap = 0
 
     while True:
-        mask = q.reader_active_mask.load(memory_order_acquire)
-        if _cas_u64(&q.reader_active_mask, &mask, mask & ~bit):
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~bit):
             _tls_set_rid(0XFFFFFFFF)
             consumer_update_min(q)
-            atomic_notify_all(&q.reader_min_pos)
+            atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)            
             return
 
 
@@ -259,7 +319,7 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t head, tail, idx
         QueueSlot* slot
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     while q.running.load(memory_order_acquire):
@@ -267,16 +327,18 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         tail = q.tail.load(memory_order_relaxed)
 
         if tail - head >= q.capacity_mask + 1:
-            if q.flags & F_OVERWRITE:
+            if q.flags.load(memory_order_acquire) & F_OVERWRITE:
                 q.head.store(head + 1, memory_order_release)
-                atomic_notify_one(&q.head)
+                
+                atomic_notify_one(&q.head, &q.head_wm)
                 continue
-            elif q.flags & F_BLOCK_ON_FULL:
+            elif q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_notify_one(&q.tail)
-                atomic_wait(&q.head, head)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+
+                atomic_notify_one(&q.tail, &q.tail_wm)
+                atomic_wait(&q.head, head, &q.head_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -285,7 +347,7 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         idx  = tail & q.capacity_mask
         slot = &q.slots[idx]
 
-        if q.flags & F_ZEROCOPY:
+        if q.flags.load(memory_order_acquire) & F_ZEROCOPY:
             slot.buf  = <char*>data
             slot.size = size
         else:
@@ -296,7 +358,8 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
         atomic_thread_fence(memory_order_release)
         q.tail.store(tail + 1, memory_order_release)
-        atomic_notify_one(&q.tail)
+        
+        atomic_notify_one(&q.tail, &q.tail_wm)
         return Q_OK
 
     return Q_ERR
@@ -308,16 +371,17 @@ cdef int spsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t head, tail, idx
         QueueSlot* slot
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     head = q.head.load(memory_order_acquire)
     tail = q.tail.load(memory_order_relaxed)
 
     if tail - head >= q.capacity_mask + 1:
-        if q.flags & F_OVERWRITE:
+        if q.flags.load(memory_order_acquire) & F_OVERWRITE:
             q.head.store(head + 1, memory_order_release)
-            atomic_notify_one(&q.head)
+            
+            atomic_notify_one(&q.head, &q.head_wm)
             head = head + 1
             if tail - head >= q.capacity_mask + 1:
                 return Q_FULL
@@ -327,7 +391,7 @@ cdef int spsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
     idx  = tail & q.capacity_mask
     slot = &q.slots[idx]
 
-    if q.flags & F_ZEROCOPY:
+    if q.flags.load(memory_order_acquire) & F_ZEROCOPY:
         slot.buf  = <char*>data
         slot.size = size
     else:
@@ -338,7 +402,8 @@ cdef int spsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
     atomic_thread_fence(memory_order_release)
     q.tail.store(tail + 1, memory_order_release)
-    atomic_notify_one(&q.tail)
+    
+    atomic_notify_one(&q.tail, &q.tail_wm)
     return Q_OK
 
 
@@ -352,12 +417,12 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint16_t total_chunks, chunk_idx, chunks_left
         uint32_t seq_id
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
-    seq_id       = q.seq_counter
-    q.seq_counter += 1
+    
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset       = 0
 
     for chunk_idx in range(total_chunks):
@@ -366,20 +431,22 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             tail = q.tail.load(memory_order_relaxed)
 
             if tail - head >= q.capacity_mask + 1:
-                if q.flags & F_OVERWRITE:
+                if q.flags.load(memory_order_acquire) & F_OVERWRITE:
                     victim      = &q.slots[head & q.capacity_mask]
                     chunks_left = victim.total_chunks - victim.chunk_idx
                     if chunks_left == 0:
                         chunks_left = 1
                     q.head.store(head + chunks_left, memory_order_release)
-                    atomic_notify_one(&q.head)
+                    
+                    atomic_notify_one(&q.head, &q.head_wm)
                     continue
-                elif q.flags & F_BLOCK_ON_FULL:
+                elif q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                     if not q.running.load(memory_order_acquire):
                         return Q_ERR
-                    atomic_notify_one(&q.tail)
-                    atomic_wait(&q.head, head)
-                    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                        
+                    atomic_notify_one(&q.tail, &q.tail_wm)
+                    atomic_wait(&q.head, head, &q.head_wm)
+                    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                         return Q_ERR
                     continue
                 else:
@@ -401,7 +468,8 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
             atomic_thread_fence(memory_order_release)
             q.tail.store(tail + 1, memory_order_release)
-            atomic_notify_one(&q.tail)
+            
+            atomic_notify_one(&q.tail, &q.tail_wm)
             break
 
         if not q.running.load(memory_order_acquire):
@@ -420,12 +488,12 @@ cdef int spsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint16_t total_chunks, chunk_idx, chunks_left
         uint32_t seq_id
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
-    seq_id       = q.seq_counter
-    q.seq_counter += 1
+    
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset       = 0
 
     for chunk_idx in range(total_chunks):
@@ -433,13 +501,14 @@ cdef int spsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         tail = q.tail.load(memory_order_relaxed)
 
         if tail - head >= q.capacity_mask + 1:
-            if q.flags & F_OVERWRITE:
+            if q.flags.load(memory_order_acquire) & F_OVERWRITE:
                 victim      = &q.slots[head & q.capacity_mask]
                 chunks_left = victim.total_chunks - victim.chunk_idx
                 if chunks_left == 0:
                     chunks_left = 1
                 q.head.store(head + chunks_left, memory_order_release)
-                atomic_notify_one(&q.head)
+                
+                atomic_notify_one(&q.head, &q.head_wm)
                 head = q.head.load(memory_order_acquire)
                 tail = q.tail.load(memory_order_relaxed)
                 if tail - head >= q.capacity_mask + 1:
@@ -463,7 +532,8 @@ cdef int spsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 
         atomic_thread_fence(memory_order_release)
         q.tail.store(tail + 1, memory_order_release)
-        atomic_notify_one(&q.tail)
+        
+        atomic_notify_one(&q.tail, &q.tail_wm)
 
     return Q_OK
 
@@ -484,7 +554,7 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         if head == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -497,7 +567,7 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 
         atomic_thread_fence(memory_order_acquire)
         q.head.store(head + 1, memory_order_release)
-        atomic_notify_one(&q.head)
+        atomic_notify_one(&q.head, &q.head_wm)
         return Q_OK
 
     return Q_ERR
@@ -526,7 +596,8 @@ cdef int spsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
 
     atomic_thread_fence(memory_order_acquire)
     q.head.store(head + 1, memory_order_release)
-    atomic_notify_one(&q.head)
+    
+    atomic_notify_one(&q.head, &q.head_wm)
     return Q_OK
 
 
@@ -543,7 +614,8 @@ cdef int spsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         if head == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+                
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -560,27 +632,31 @@ cdef int spsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
 
 cdef void spsc_pop_commit(void* ctx) noexcept nogil:
-    cdef QueueImpl* q = <QueueImpl*>ctx
-    cdef uint64_t head = q.head.load(memory_order_relaxed)
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        uint64_t head = q.head.load(memory_order_relaxed)
+    
     q.head.store(head + 1, memory_order_release)
-    atomic_notify_one(&q.head)
+    
+    atomic_notify_one(&q.head, &q.head_wm)
 
 
 cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
-        ConsumerCtx* st = &q.consumer_ctx[0]
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
         size_t needed
         char* tmp
+        uint16_t total_chunks
 
     while q.running.load(memory_order_acquire):
         head = q.head.load(memory_order_relaxed)
         tail = q.tail.load(memory_order_acquire)
 
         if head == tail:
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -597,7 +673,7 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
                 st.assemble_used  = 0
             else:
                 q.head.store(head + 1, memory_order_release)
-                atomic_notify_one(&q.head)
+                atomic_notify_one(&q.head, &q.head_wm)
                 continue
 
         needed = st.assemble_used + slot.size
@@ -611,12 +687,14 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
+        total_chunks = slot.total_chunks
+
         q.head.store(head + 1, memory_order_release)
-        atomic_notify_one(&q.head)
+        atomic_notify_one(&q.head, &q.head_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -630,11 +708,12 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
 cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
-        ConsumerCtx* st = &q.consumer_ctx[0]
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
         size_t needed
         char* tmp
+        uint16_t total_chunks
 
     if not q.running.load(memory_order_acquire):
         return Q_ERR
@@ -661,7 +740,7 @@ cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
                 st.assemble_used  = 0
             else:
                 q.head.store(head + 1, memory_order_release)
-                atomic_notify_one(&q.head)
+                atomic_notify_one(&q.head, &q.head_wm)
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
                 continue
@@ -677,12 +756,14 @@ cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
+        total_chunks = slot.total_chunks
+
         q.head.store(head + 1, memory_order_release)
-        atomic_notify_one(&q.head)
+        atomic_notify_one(&q.head, &q.head_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -703,7 +784,7 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t head, tail, idx
         QueueSlot* slot
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     while q.running.load(memory_order_acquire):
@@ -711,11 +792,12 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         tail = q.tail.load(memory_order_relaxed)
 
         if tail - head >= q.capacity_mask + 1:
-            if q.flags & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.head, head)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                    
+                atomic_wait(&q.head, head, &q.head_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -737,8 +819,8 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + 1, memory_order_release)
-        atomic_notify_all(&q.publish[idx].seq)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+        atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
     return Q_ERR
@@ -750,7 +832,7 @@ cdef int mpsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t head, tail, idx
         QueueSlot* slot
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     tail = q.tail.load(memory_order_relaxed)
@@ -775,8 +857,8 @@ cdef int mpsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
     atomic_thread_fence(memory_order_release)
     q.publish[idx].seq.store(tail + 1, memory_order_release)
-    atomic_notify_all(&q.publish[idx].seq)
-    atomic_notify_all(&q.tail)
+    atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+    atomic_notify_all(&q.tail, &q.tail_wm)
     return Q_OK
 
 
@@ -789,7 +871,7 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint16_t total_chunks, chunk_idx
         uint32_t seq_id
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     cap          = q.capacity_mask + 1
@@ -800,11 +882,12 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         tail = q.tail.load(memory_order_relaxed)
 
         if (tail + total_chunks) - head > cap:
-            if q.flags & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.head, head)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                    
+                atomic_wait(&q.head, head, &q.head_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -814,8 +897,7 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             cpu_pause()
             continue
 
-        seq_id = q.seq_counter
-        q.seq_counter += 1
+        seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
         offset = 0
 
         for chunk_idx in range(total_chunks):
@@ -835,8 +917,9 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
             atomic_thread_fence(memory_order_release)
             q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
-            atomic_notify_all(&q.publish[idx].seq)
-            atomic_notify_all(&q.tail)
+            
+            atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+            atomic_notify_all(&q.tail, &q.tail_wm)
 
         return Q_OK
 
@@ -852,7 +935,7 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint16_t total_chunks, chunk_idx
         uint32_t seq_id
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     cap          = q.capacity_mask + 1
@@ -867,8 +950,7 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
             break
         cpu_pause()
 
-    seq_id = q.seq_counter
-    q.seq_counter += 1
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset = 0
 
     for chunk_idx in range(total_chunks):
@@ -888,8 +970,8 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
-        atomic_notify_all(&q.publish[idx].seq)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+        atomic_notify_all(&q.tail, &q.tail_wm)
 
     return Q_OK
 
@@ -910,7 +992,7 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         if head == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -918,8 +1000,6 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR            
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -929,10 +1009,7 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         out_size[0] = slot.size
 
         q.head.store(head + 1, memory_order_release)
-        q.publish[idx].seq.store(
-            head + 1 + (q.capacity_mask + 1), memory_order_release
-        )
-        atomic_notify_all(&q.head)
+        atomic_notify_all(&q.head, &q.head_wm)
         return Q_OK
 
     return Q_ERR
@@ -965,10 +1042,7 @@ cdef int mpsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
     out_size[0] = slot.size
 
     q.head.store(head + 1, memory_order_release)
-    q.publish[idx].seq.store(
-        head + 1 + (q.capacity_mask + 1), memory_order_release
-    )
-    atomic_notify_all(&q.head)
+    atomic_notify_all(&q.head, &q.head_wm)
     return Q_OK
 
 
@@ -976,6 +1050,7 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
         uint64_t head, tail, idx
+        uint64_t seq_snap
         QueueSlot* slot
 
     while q.running.load(memory_order_acquire):
@@ -985,7 +1060,7 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         if head == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -993,9 +1068,7 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR
-            atomic_wait(&q.publish[idx].seq, q.publish[idx].seq.load(memory_order_relaxed))
+            cpu_pause()
 
         slot = &q.slots[idx]
         atomic_thread_fence(memory_order_acquire)
@@ -1017,29 +1090,28 @@ cdef void mpsc_pop_commit(void* ctx) noexcept nogil:
     while q.publish[bidx].seq.load(memory_order_acquire) != bpos + 1:
         if not q.running.load(memory_order_acquire):
             return
-
+        cpu_pause()
+        
     q.head.store(bpos + 1, memory_order_release)
-    q.publish[bidx].seq.store(
-        bpos + 1 + (q.capacity_mask + 1), memory_order_release
-    )
-    atomic_notify_all(&q.head)
+    atomic_notify_all(&q.head, &q.head_wm)
 
 
 cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
-        ConsumerCtx* st = &q.consumer_ctx[0]
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
         size_t needed
         char* tmp
+        uint16_t total_chunks
 
     while q.running.load(memory_order_acquire):
         head = q.head.load(memory_order_relaxed)
         tail = q.tail.load(memory_order_acquire)
 
         if head == tail:
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -1047,8 +1119,6 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         idx = head & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1059,12 +1129,12 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
                 st.expected_seq   = slot.seq_id
                 st.expected_chunk = 0
                 st.assemble_used  = 0
+
+                st.resync_count  += 1
             else:
                 q.head.store(head + 1, memory_order_release)
-                q.publish[idx].seq.store(
-                    head + 1 + (q.capacity_mask + 1), memory_order_release
-                )
-                atomic_notify_all(&q.head)
+                atomic_notify_all(&q.head, &q.head_wm)
+                st.discard_count += 1
                 continue
 
         needed = st.assemble_used + slot.size
@@ -1078,15 +1148,14 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
+        total_chunks = slot.total_chunks
+
         q.head.store(head + 1, memory_order_release)
-        q.publish[idx].seq.store(
-            head + 1 + (q.capacity_mask + 1), memory_order_release
-        )
-        atomic_notify_all(&q.head)
+        atomic_notify_all(&q.head, &q.head_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -1100,11 +1169,12 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
 cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
-        ConsumerCtx* st = &q.consumer_ctx[0]
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
         size_t needed
         char* tmp
+        uint16_t total_chunks
 
     if not q.running.load(memory_order_acquire):
         return Q_ERR
@@ -1132,12 +1202,12 @@ cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
                 st.expected_seq   = slot.seq_id
                 st.expected_chunk = 0
                 st.assemble_used  = 0
+
+                st.resync_count  += 1
             else:
                 q.head.store(head + 1, memory_order_release)
-                q.publish[idx].seq.store(
-                    head + 1 + (q.capacity_mask + 1), memory_order_release
-                )
-                atomic_notify_all(&q.head)
+                atomic_notify_all(&q.head, &q.head_wm)
+                st.discard_count += 1
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
                 continue
@@ -1153,15 +1223,14 @@ cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
+        total_chunks = slot.total_chunks
+
         q.head.store(head + 1, memory_order_release)
-        q.publish[idx].seq.store(
-            head + 1 + (q.capacity_mask + 1), memory_order_release
-        )
-        atomic_notify_all(&q.head)
+        atomic_notify_all(&q.head, &q.head_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -1185,13 +1254,13 @@ cdef inline int _mc_pop_impl(
         QueueSlot* slot
 
     while q.running.load(memory_order_acquire):
-        pos  = q.reader_pos[rid].load(memory_order_acquire)
+        pos  = q.reader_pos[rid].value.load(memory_order_acquire)
         tail = q.tail.load(memory_order_acquire)
 
         if pos == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -1199,8 +1268,6 @@ cdef inline int _mc_pop_impl(
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1209,9 +1276,9 @@ cdef inline int _mc_pop_impl(
         out_buf[0]  = slot.buf
         out_size[0] = slot.size
 
-        q.reader_pos[rid].store(pos + 1, memory_order_release)
+        q.reader_pos[rid].value.store(pos + 1, memory_order_release)
         consumer_update_min(q)
-        atomic_notify_all(&q.reader_min_pos)
+        atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
         return Q_OK
 
@@ -1231,7 +1298,7 @@ cdef inline int _mc_try_pop_impl(
     if not q.running.load(memory_order_acquire):
         return Q_ERR
 
-    pos  = q.reader_pos[rid].load(memory_order_acquire)
+    pos  = q.reader_pos[rid].value.load(memory_order_acquire)
     tail = q.tail.load(memory_order_acquire)
 
     if pos == tail:
@@ -1248,9 +1315,9 @@ cdef inline int _mc_try_pop_impl(
     out_buf[0]  = slot.buf
     out_size[0] = slot.size
 
-    q.reader_pos[rid].store(pos + 1, memory_order_release)
+    q.reader_pos[rid].value.store(pos + 1, memory_order_release)
     consumer_update_min(q)
-    atomic_notify_all(&q.reader_min_pos)
+    atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
     return Q_OK
 
@@ -1267,7 +1334,7 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t   tail, min_pos, idx
         QueueSlot* slot
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     while q.running.load(memory_order_acquire):
@@ -1275,11 +1342,12 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         min_pos = q.reader_min_pos.load(memory_order_acquire)
 
         if tail - min_pos >= q.capacity_mask + 1:
-            if q.flags & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.reader_min_pos, min_pos)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                    
+                atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -1289,7 +1357,7 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
         slot = &q.slots[idx]
 
-        if q.flags & F_ZEROCOPY:
+        if q.flags.load(memory_order_acquire) & F_ZEROCOPY:
             slot.buf  = <char*>data
             slot.size = size
         else:
@@ -1301,7 +1369,7 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + 1, memory_order_release)
         q.tail.store(tail + 1, memory_order_release)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
     return Q_ERR
@@ -1313,7 +1381,7 @@ cdef int spmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t   tail, min_pos, idx
         QueueSlot* slot
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     tail    = q.tail.load(memory_order_relaxed)
@@ -1326,7 +1394,7 @@ cdef int spmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
     slot = &q.slots[idx]
 
-    if q.flags & F_ZEROCOPY:
+    if q.flags.load(memory_order_acquire) & F_ZEROCOPY:
         slot.buf  = <char*>data
         slot.size = size
     else:
@@ -1338,7 +1406,7 @@ cdef int spmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
     atomic_thread_fence(memory_order_release)
     q.publish[idx].seq.store(tail + 1, memory_order_release)
     q.tail.store(tail + 1, memory_order_release)
-    atomic_notify_all(&q.tail)
+    atomic_notify_all(&q.tail, &q.tail_wm)
     return Q_OK
 
 
@@ -1351,12 +1419,12 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint16_t   total_chunks, chunk_idx
         uint32_t   seq_id
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
-    seq_id       = q.seq_counter
-    q.seq_counter += 1
+    
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset       = 0
 
     for chunk_idx in range(total_chunks):
@@ -1365,11 +1433,12 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             min_pos = q.reader_min_pos.load(memory_order_acquire)
 
             if tail - min_pos >= q.capacity_mask + 1:
-                if q.flags & F_BLOCK_ON_FULL:
+                if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                     if not q.running.load(memory_order_acquire):
                         return Q_ERR
-                    atomic_wait(&q.reader_min_pos, min_pos)
-                    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                        
+                    atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
+                    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                         return Q_ERR
                     continue
                 else:
@@ -1393,7 +1462,7 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             atomic_thread_fence(memory_order_release)
             q.publish[idx].seq.store(tail + 1, memory_order_release)
             q.tail.store(tail + 1, memory_order_release)
-            atomic_notify_all(&q.tail)
+            atomic_notify_all(&q.tail, &q.tail_wm)
             break
 
         if not q.running.load(memory_order_acquire):
@@ -1411,12 +1480,11 @@ cdef int spmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint16_t   total_chunks, chunk_idx
         uint32_t   seq_id
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
-    seq_id       = q.seq_counter
-    q.seq_counter += 1
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset       = 0
 
     for chunk_idx in range(total_chunks):
@@ -1444,7 +1512,7 @@ cdef int spmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + 1, memory_order_release)
         q.tail.store(tail + 1, memory_order_release)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.tail, &q.tail_wm)
 
     return Q_OK
 
@@ -1468,13 +1536,13 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         QueueSlot* slot
 
     while q.running.load(memory_order_acquire):
-        pos  = q.reader_pos[rid].load(memory_order_acquire)
+        pos  = q.reader_pos[rid].value.load(memory_order_acquire)
         tail = q.tail.load(memory_order_acquire)
 
         if pos == tail:
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -1482,8 +1550,6 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1502,27 +1568,28 @@ cdef void spmc_pop_commit(void* ctx) noexcept nogil:
         uint32_t   rid = _tls_get_rid()
         uint64_t   pos = _tls_get_borrow_pos()
 
-    q.reader_pos[rid].store(pos + 1, memory_order_release)
+    q.reader_pos[rid].value.store(pos + 1, memory_order_release)
     consumer_update_min(q)
-    atomic_notify_all(&q.reader_min_pos)
+    atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
 
 cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q   = <QueueImpl*>ctx
         uint32_t   rid = _tls_get_rid()
-        ConsumerCtx* st = &q.consumer_ctx[rid]
+        ConsumerCtx* st = &q.consumer_ctx[rid].value
         uint64_t   pos, tail, idx
         QueueSlot* slot
         size_t     needed
         char*      tmp
+        uint16_t   total_chunks
 
     while q.running.load(memory_order_acquire):
-        pos  = q.reader_pos[rid].load(memory_order_acquire)
+        pos  = q.reader_pos[rid].value.load(memory_order_acquire)
         tail = q.tail.load(memory_order_acquire)
 
         if pos == tail:
-            atomic_wait(&q.tail, tail)
+            atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
                 return Q_ERR
             continue
@@ -1530,8 +1597,6 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         idx = pos & q.capacity_mask
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
-#            if not q.running.load(memory_order_acquire):
-#                return Q_ERR
             cpu_pause()
 
         slot = &q.slots[idx]
@@ -1542,10 +1607,14 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
                 st.expected_seq   = slot.seq_id
                 st.expected_chunk = 0
                 st.assemble_used  = 0
+
+                st.resync_count  += 1
             else:
-                q.reader_pos[rid].store(pos + 1, memory_order_release)
+                q.reader_pos[rid].value.store(pos + 1, memory_order_release)
                 consumer_update_min(q)
-                atomic_notify_all(&q.reader_min_pos)
+                atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+
+                st.discard_count += 1
                 continue
 
         needed = st.assemble_used + slot.size
@@ -1559,13 +1628,15 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
-        q.reader_pos[rid].store(pos + 1, memory_order_release)
+        total_chunks = slot.total_chunks
+
+        q.reader_pos[rid].value.store(pos + 1, memory_order_release)
         consumer_update_min(q)
-        atomic_notify_all(&q.reader_min_pos)
+        atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -1580,11 +1651,12 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
     cdef:
         QueueImpl* q   = <QueueImpl*>ctx
         uint32_t   rid = _tls_get_rid()
-        ConsumerCtx* st = &q.consumer_ctx[rid]
+        ConsumerCtx* st = &q.consumer_ctx[rid].value
         uint64_t   pos, tail, idx
         QueueSlot* slot
         size_t     needed
         char*      tmp
+        uint16_t   total_chunks
 
     if not q.running.load(memory_order_acquire):
         return Q_ERR
@@ -1593,7 +1665,7 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         if not q.running.load(memory_order_acquire):
             return Q_ERR
 
-        pos  = q.reader_pos[rid].load(memory_order_acquire)
+        pos  = q.reader_pos[rid].value.load(memory_order_acquire)
         tail = q.tail.load(memory_order_acquire)
 
         if pos == tail:
@@ -1612,10 +1684,14 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
                 st.expected_seq   = slot.seq_id
                 st.expected_chunk = 0
                 st.assemble_used  = 0
+
+                st.resync_count  += 1                
             else:
-                q.reader_pos[rid].store(pos + 1, memory_order_release)
+                q.reader_pos[rid].value.store(pos + 1, memory_order_release)
                 consumer_update_min(q)
-                atomic_notify_all(&q.reader_min_pos)
+                atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+
+                st.discard_count += 1                
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
                 continue
@@ -1631,13 +1707,15 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
         st.assemble_used += slot.size
 
-        q.reader_pos[rid].store(pos + 1, memory_order_release)
+        total_chunks  = slot.total_chunks
+        
+        q.reader_pos[rid].value.store(pos + 1, memory_order_release)
         consumer_update_min(q)
-        atomic_notify_all(&q.reader_min_pos)
+        atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
 
         st.expected_chunk += 1
 
-        if st.expected_chunk == slot.total_chunks:
+        if st.expected_chunk == total_chunks:
             out_buf[0]       = st.assemble_buf
             out_size[0]      = st.assemble_used
             st.assemble_used  = 0
@@ -1658,16 +1736,17 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t   tail, min_pos, idx
         QueueSlot* slot
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     while q.running.load(memory_order_acquire):
-        if q.reader_active_mask.load(memory_order_acquire) == 0:
-            if q.flags & F_BLOCK_ON_FULL:
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.reader_active_mask, <uint64_t>0)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                    
+                atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -1677,11 +1756,12 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         min_pos = q.reader_min_pos.load(memory_order_acquire)
 
         if tail - min_pos >= q.capacity_mask + 1:
-            if q.flags & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.reader_min_pos, min_pos)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                    
+                atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -1703,7 +1783,7 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + 1, memory_order_release)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
     return Q_ERR
@@ -1715,10 +1795,10 @@ cdef int mpmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         uint64_t   tail, min_pos, idx
         QueueSlot* slot
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
     
-    if q.reader_active_mask.load(memory_order_acquire) == 0:
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
         return Q_NO_CONSUMER
 
     tail    = q.tail.load(memory_order_relaxed)
@@ -1745,7 +1825,7 @@ cdef int mpmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
     atomic_thread_fence(memory_order_release)
     q.publish[idx].seq.store(tail + 1, memory_order_release)
-    atomic_notify_all(&q.tail)
+    atomic_notify_all(&q.tail, &q.tail_wm)
     return Q_OK
 
 
@@ -1758,19 +1838,19 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint16_t   total_chunks, chunk_idx
         uint32_t   seq_id
 
-    if q.flags & F_CLOSING:
+    if q.flags.load(memory_order_acquire) & F_CLOSING:
         return Q_ERR
 
     cap          = q.capacity_mask + 1
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
 
     while q.running.load(memory_order_acquire):
-        if q.reader_active_mask.load(memory_order_acquire) == 0:
-            if q.flags & F_BLOCK_ON_FULL:
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.reader_active_mask, <uint64_t>0)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -1780,11 +1860,11 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         min_pos = q.reader_min_pos.load(memory_order_acquire)
 
         if (tail + total_chunks) - min_pos > cap:
-            if q.flags & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
                     return Q_ERR
-                atomic_wait(&q.reader_min_pos, min_pos)
-                if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+                atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
                     return Q_ERR
                 continue
             else:
@@ -1797,8 +1877,7 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         for chunk_idx in range(total_chunks):
             idx = (tail + chunk_idx) & q.capacity_mask
 
-        seq_id = q.seq_counter
-        q.seq_counter += 1
+        seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
         offset = 0
 
         for chunk_idx in range(total_chunks):
@@ -1818,7 +1897,7 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
             atomic_thread_fence(memory_order_release)
             q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
-            atomic_notify_all(&q.tail)
+            atomic_notify_all(&q.tail, &q.tail_wm)
 
         return Q_OK
 
@@ -1834,10 +1913,10 @@ cdef int mpmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint16_t   total_chunks, chunk_idx
         uint32_t   seq_id
 
-    if not q.running.load(memory_order_acquire) or (q.flags & F_CLOSING):
+    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
         return Q_ERR
     
-    if q.reader_active_mask.load(memory_order_acquire) == 0:
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
         return Q_NO_CONSUMER
 
 
@@ -1856,8 +1935,7 @@ cdef int mpmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
             break
         cpu_pause()
 
-    seq_id = q.seq_counter
-    q.seq_counter += 1
+    seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
     offset = 0
 
     for chunk_idx in range(total_chunks):
@@ -1877,7 +1955,7 @@ cdef int mpmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
-        atomic_notify_all(&q.tail)
+        atomic_notify_all(&q.tail, &q.tail_wm)
 
     return Q_OK
 
@@ -1909,47 +1987,6 @@ cdef int mpmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
 # =========================================================================
 
 cdef class Queue:
-
-    def __cinit__(self):
-        self._q.head.store(0, memory_order_relaxed)
-        self._q.tail.store(0, memory_order_relaxed)
-        self._q.running.store(1, memory_order_relaxed)
-
-        self._q.seq_counter    = 0
-
-        self._q.slots     = NULL
-        self._q.slot_bufs = NULL
-        self._q.publish   = NULL
-
-        self._q.reader_active_mask.store(0, memory_order_relaxed)
-        self._q.reader_min_pos.store(0, memory_order_relaxed)
-
-        cdef uint32_t _ri
-        for _ri in range(64):
-            self._q.reader_pos[_ri].store(0, memory_order_relaxed)
-        
-        cdef int _ci
-        for _ci in range(64):
-            self._q.consumer_ctx[_ci].expected_seq = 0
-            self._q.consumer_ctx[_ci].expected_chunk = 0
-            self._q.consumer_ctx[_ci].assemble_buf = NULL
-            self._q.consumer_ctx[_ci].assemble_used = 0
-            self._q.consumer_ctx[_ci].assemble_cap = 0
-
-        self._q.fn_register_consumer   = NULL
-        self._q.fn_unregister_consumer = NULL
-
-        self._q.fn_push         = NULL
-        self._q.fn_try_push     = NULL
-        self._q.fn_push_var     = NULL
-        self._q.fn_try_push_var = NULL
-        self._q.fn_pop          = NULL
-        self._q.fn_try_pop      = NULL
-        self._q.fn_pop_var      = NULL
-        self._q.fn_try_pop_var  = NULL
-        self._q.fn_pop_borrow   = NULL
-        self._q.fn_pop_commit   = NULL
-
     def __init__(
             self,
             size_t    slot_size,
@@ -1959,45 +1996,17 @@ cdef class Queue:
             bint      zerocopy      = False,
             bint      block_on_full = False,
         ):
-        cdef size_t i
-
-        if capacity == 0 or (capacity & (capacity - 1)) != 0:
-            raise ValueError("capacity must be a non-zero power of 2")
-        if slot_size == 0:
-            raise ValueError("slot_size must be > 0")
-
-        self._q.mode = mode
-        self._q.flags = (
+        cdef uint8_t init_flags = (
             (F_OVERWRITE     if overwrite     else 0) |
             (F_ZEROCOPY      if zerocopy      else 0) |
             (F_BLOCK_ON_FULL if block_on_full else 0)
         )
-        self._q.capacity_mask = capacity - 1
-        self._q.slot_size     = slot_size
+        cdef int rc = queue_init(<void*>&self._q, slot_size, capacity,
+                                  mode != SPSC, init_flags)
+        if rc == Q_ERR:
+            raise ValueError("invalid capacity/slot_size, or allocation failed")
 
-        self._q.slots     = <QueueSlot*>aligned_alloc_(64, capacity * sizeof(QueueSlot))
-        self._q.slot_bufs = <char*>aligned_alloc_(64, capacity * slot_size)
-
-        if self._q.slots == NULL or self._q.slot_bufs == NULL:
-            raise MemoryError("failed to allocate queue slots")
-
-        memset(self._q.slot_bufs, 0, capacity * slot_size)
-
-        for i in range(capacity):
-            self._q.slots[i].buf          = self._q.slot_bufs + i * slot_size
-            self._q.slots[i].size         = 0
-            self._q.slots[i].seq_id       = 0
-            self._q.slots[i].chunk_idx    = 0
-            self._q.slots[i].total_chunks = 0
-
-        if mode != SPSC:
-            self._q.publish = <PublishEntry*>aligned_alloc_(
-                64, capacity * sizeof(PublishEntry)
-            )
-            if self._q.publish == NULL:
-                raise MemoryError("failed to allocate publish array")
-            for i in range(capacity):
-                self._q.publish[i].seq.store(i, memory_order_relaxed)
+        self._q.mode = mode
 
         if mode == SPSC:
             self._q.fn_push         = spsc_push
@@ -2101,19 +2110,4 @@ cdef class Queue:
         self.close()
         unregister_context_notify(<void*>&self._q)
         cleanup_signal_handler()
-
-        cdef int _ci
-        for _ci in range(64):
-            if self._q.consumer_ctx[_ci].assemble_buf != NULL:
-                free(self._q.consumer_ctx[_ci].assemble_buf)
-                self._q.consumer_ctx[_ci].assemble_buf = NULL
-
-        if self._q.publish != NULL:
-            aligned_free_(self._q.publish)
-            self._q.publish = NULL
-        if self._q.slot_bufs != NULL:
-            aligned_free_(self._q.slot_bufs)
-            self._q.slot_bufs = NULL
-        if self._q.slots != NULL:
-            aligned_free_(self._q.slots)
-            self._q.slots = NULL
+        queue_destroy(<void*>&self._q)

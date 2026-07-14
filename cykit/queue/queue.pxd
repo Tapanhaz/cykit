@@ -1,6 +1,17 @@
 from libcpp.atomic cimport atomic
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
-from cykit.common cimport atomic_uint64_t
+from cykit.utils.atomic cimport (
+    WaiterMetaBare, 
+    WaiterMetaPaddedBare, 
+    PaddedAtomicU64, 
+    CachelinePadded
+)
+
+
+cdef extern from "queue_helper.hpp" namespace "cykit" nogil:
+    cdef struct PublishEntry:
+        atomic[uint64_t] seq
+        WaiterMetaBare[uint64_t] seq_wm
 
 
 ctypedef int  (*push_fn)(void*, const char*, size_t) noexcept nogil
@@ -41,47 +52,44 @@ cdef struct QueueSlot:
     uint16_t chunk_idx
     uint16_t total_chunks
 
-cdef struct PublishEntry:
-    atomic[uint64_t] seq  
-
 cdef struct ConsumerCtx:
     uint32_t expected_seq
     uint16_t expected_chunk
     char*    assemble_buf
     size_t   assemble_used
     size_t   assemble_cap
+    uint64_t discard_count
+    uint64_t resync_count
 
 
 cdef struct QueueImpl:
     atomic[uint64_t] tail
-    #uint8_t[56]      pad_tail
-    uint8_t[120]      pad_tail
+    WaiterMetaPaddedBare[uint64_t] tail_wm
     
     atomic[uint64_t] head
-    #uint8_t[56]      pad_head
-    uint8_t[120]      pad_head
+    WaiterMetaPaddedBare[uint64_t] head_wm
 
     size_t      capacity_mask
     size_t      slot_size
     QueueSlot*  slots
     char*       slot_bufs
     atomic[uint64_t] running
-    uint8_t     flags
+    atomic[uint8_t] flags
     QueueMode   mode
     
     PublishEntry* publish    
     
-    uint32_t seq_counter
+    atomic[uint32_t] seq_counter
 
-    atomic[uint64_t] reader_active_mask
+    PaddedAtomicU64   reader_active_mask
+    WaiterMetaPaddedBare[uint64_t] reader_active_mask_wm
     atomic[uint64_t] reader_min_pos
-    #uint8_t[48]      pad_bcast
-    uint8_t[120]      pad_bcast
+    WaiterMetaPaddedBare[uint64_t] reader_min_pos_wm
 
-    atomic[uint64_t] reader_pos[64]
+    PaddedAtomicU64 reader_pos[64]
     
-    ConsumerCtx[64] consumer_ctx
-    
+    CachelinePadded[ConsumerCtx] consumer_ctx[64]
+
     push_fn   fn_push
     push_fn   fn_try_push
     push_fn   fn_push_var
@@ -160,6 +168,8 @@ cdef void queue_notify(void* ctx) noexcept nogil
 cdef int  register_consumer  (void*, uint32_t*) noexcept nogil
 cdef void unregister_consumer(void*, uint32_t)  noexcept nogil
 
+cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
+                        bint needs_publish, uint8_t init_flags) noexcept nogil
 cdef int queue_close(void* ctx, long timeout_ms = ?) noexcept nogil
 
 
