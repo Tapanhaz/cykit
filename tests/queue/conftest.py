@@ -1,4 +1,3 @@
-
 import sys
 import pathlib
 import pyximport
@@ -19,15 +18,11 @@ pyximport.install(
     inplace=True,
     setup_args={
         "ext_modules": [
-            Extension(
-                name="bench", 
-                sources=[str(TESTS_DIR / "bench.pyx")], 
-                **kwargs
-            )
+            Extension(name="bench", sources=[str(TESTS_DIR / "bench.pyx")], **kwargs)
         ],
         "cmdclass": {"build_ext": build_ext},
     },
-    build_in_temp=False
+    build_in_temp=False,
 )
 
 import bench  # type: ignore  # noqa: E402, F401
