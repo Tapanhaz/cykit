@@ -303,7 +303,6 @@ inline const win_wait_fns& win_sync() noexcept {
 template <typename T>
 inline void atomic_wait(std::atomic<T>* obj, T expected) noexcept {
     CYKIT_ASSERT_WAIT_WORD(T);
-    detail::waiter_guard _wg(obj);
     if (auto fn = detail::win_sync().wait) {
         T exp = expected;
         fn(obj, &exp, sizeof(exp), INFINITE);
@@ -423,7 +422,6 @@ inline constexpr uint32_t apple_sync_flags_none = 0;
 template <typename T>
 inline void atomic_wait(std::atomic<T>* obj, T expected) noexcept {
     CYKIT_ASSERT_WAIT_WORD(T);
-    detail::waiter_guard _wg(obj);
     if (auto fn = detail::apple_sync().wait) {
         fn(obj, static_cast<uint64_t>(expected), sizeof(T), detail::apple_sync_flags_none);
         return;
