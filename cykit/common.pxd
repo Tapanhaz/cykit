@@ -93,6 +93,27 @@ cdef extern from "<atomic>" namespace "std" nogil:
     void atomic_notify_one[uint64_t](const atomic[uint64_t]* obj, uint64_t val) noexcept
     void atomic_notify_one[uint64_t](volatile atomic[uint64_t]* obj) noexcept
 
+
+cdef extern from "<mutex>" namespace "std" nogil:
+    cdef cppclass mutex:
+        mutex() except +
+    
+    cdef cppclass unique_lock[T]:
+        unique_lock() except +
+        unique_lock(T& m) except +
+        void lock()
+        void unlock()
+
+cdef extern from "<condition_variable>" namespace "std" nogil:
+    cdef cppclass condition_variable:
+        condition_variable() except +
+        
+        void notify_one() noexcept
+        void notify_all() noexcept
+        
+        void wait(unique_lock[mutex]& lock) noexcept
+
+
 cdef extern from *:
     """
     #ifdef _WIN32
@@ -116,14 +137,52 @@ cdef extern from "<thread>" namespace "std" nogil:
         void detach() noexcept
         bint joinable() noexcept
 
+
 cdef extern from *:
     """
     #include <thread>
+    #if defined(_WIN32)
+      #include <windows.h>
+    #elif defined(__APPLE__)
+      #include <pthread.h>
+      #include <mach/thread_act.h>
+      #include <mach/thread_policy.h>
+    #elif defined(__linux__)
+      #include <pthread.h>
+      #include <sched.h>
+    #endif
+
+    static inline bool set_thread_affinity(std::thread& t, int core_id) noexcept {
+    #if defined(_WIN32)
+        DWORD_PTR mask = (DWORD_PTR)1 << core_id;
+        return SetThreadAffinityMask((HANDLE)t.native_handle(), mask) != 0;
+    #elif defined(__APPLE__)
+        thread_port_t mt = pthread_mach_thread_np(t.native_handle());
+        thread_affinity_policy_data_t policy = { core_id };
+        return thread_policy_set(mt, THREAD_AFFINITY_POLICY,
+                  (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT) == KERN_SUCCESS;
+    #elif defined(__linux__)
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_id, &cpuset);
+        return pthread_setaffinity_np(t.native_handle(), sizeof(cpu_set_t), &cpuset) == 0;
+    #else
+        (void)t; (void)core_id;
+        return false;
+    #endif
+    }
 
     template<typename F, typename A>
     std::thread make_thread(F f, A a) { return std::thread(f, a); }
+
+    static inline unsigned int hw_concurrency() noexcept {
+        return std::thread::hardware_concurrency();
+    }
     """
     thread make_thread[F, A](F f, A a) noexcept nogil
+
+    bint set_thread_affinity(thread& t, int core_id) noexcept nogil
+    unsigned int hw_concurrency() noexcept nogil  
 
 
 cdef extern from * nogil:
