@@ -31,5 +31,20 @@ jobs:
       - name: Build and install cykit
         run: pip install -e . -v
 
+      - name: Debug (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd tests/logging_handlers
+
+          echo "=== ldd output ==="
+          ldd ../../cykit/cylogger/cylogger*.so
+
+          echo "=== LD_DEBUG=libs ==="
+          LD_DEBUG=libs python run.py 2>&1 | grep -i error || true
+
+          echo "=== gdb backtrace ==="
+          sudo apt-get install -y gdb
+          gdb -ex run -ex "thread apply all bt" -ex quit --args python run.py
+
       - name: Run test suite
         run: pytest tests/ -vvv -s --tb=long --showlocals --setup-show
