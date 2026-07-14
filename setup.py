@@ -18,8 +18,11 @@ if config.use_sys_boost:
 if config.debug:
     print("===> DEBUG Mode is enabled")
 
-if config.ext_debug:
-    print("===> EXTENDED DEBUG (ASAN/UBSAN) Mode is enabled")
+if config.debug_asan:
+    print("===> DEBUG_ASAN (ASAN/UBSAN) Mode is enabled")
+
+if config.debug_tsan:
+    print("===> DEBUG_TSAN (ThreadSanitizer) Mode is enabled")
 
 FORCE_BOOST_DOWNLOAD = config.get_env_flag("FORCE_BOOST_DOWNLOAD")
 
@@ -136,7 +139,7 @@ class BuildExt(build_ext):
             str(cmake_source_dir),
             (
                 "-DCMAKE_BUILD_TYPE=Debug"
-                if config.ext_debug
+                if (config.debug_asan or config.debug_tsan)
                 else "-DCMAKE_BUILD_TYPE=Release"
             ),
         ]
@@ -376,6 +379,11 @@ extensions = [
         sources=["cykit/queue/queue.pyx"],
         **base_ext_kwargs,
     ),
+    # Extension(
+    #    "cykit.ipc.ipc",
+    #    sources=["cykit/ipc/ipc.pyx"],
+    #    **base_ext_kwargs,
+    # ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
         sources=["cykit/utils/msgbridge/msgbridge.pyx"],
