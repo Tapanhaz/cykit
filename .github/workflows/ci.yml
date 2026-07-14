@@ -32,4 +32,4 @@ jobs:
         run: pip install -e . -v
 
       - name: Run test suite
-        run: pytest tests/ -vvv -s
+        run: pytest tests/ -vvv -s --tb=long --showlocals --setup-show
