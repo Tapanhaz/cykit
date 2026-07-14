@@ -188,6 +188,8 @@ cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
         q.publish = <PublishEntry*>aligned_alloc_(CACHELINE, capacity * sizeof(PublishEntry))
         if q.publish == NULL:
             return Q_ERR
+        memset(q.publish, 0, capacity * sizeof(PublishEntry))
+        
         for i in range(capacity):
             q.publish[i].seq.store(i, memory_order_relaxed)
 
