@@ -32,4 +32,4 @@ jobs:
         run: pip install -e . -v
 
       - name: Run test suite
-        run: pytest tests/ -v
+        run: pytest tests/ -vvv -s
