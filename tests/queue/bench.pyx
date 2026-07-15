@@ -246,7 +246,7 @@ cdef void _consumer_thread(ConsumerArgs* a) noexcept nogil:
             printf(b"[CONSUMER] register_consumer failed: %d\n", rc)
             return
     
-    if pair == PAIR_PUSH_POP or pair == PAIR_TRY_PUSH_POP or pair == PAIR_PUSH_BORROW_COMMIT:
+    if pair == PAIR_PUSH_BORROW_COMMIT:
         verify_buf = <char*>malloc(q.slot_size)
         if verify_buf == NULL:
             printf(b"[CONSUMER] OOM for verify_buf\n")
@@ -291,16 +291,14 @@ cdef void _consumer_thread(ConsumerArgs* a) noexcept nogil:
             total_bytes += out_size
 
             if pair == PAIR_PUSH_POP or pair == PAIR_TRY_PUSH_POP:
-                if out_size <= q.slot_size:
-                    memcpy(verify_buf, out_buf, out_size)
                 if out_size < sizeof(BenchMsgHeader) or out_size > q.slot_size:
                     a.corrupt_count += 1
                 else:
-                    hdr = (<BenchMsgHeader*>verify_buf)[0]
+                    hdr = (<BenchMsgHeader*>out_buf)[0]
                     got_crc = hdr.crc32
-                    (<BenchMsgHeader*>verify_buf)[0].crc32 = 0
-                    want_crc = bench_crc32c(verify_buf, out_size, 0xFFFFFFFF)
-                    (<BenchMsgHeader*>verify_buf)[0].crc32 = got_crc
+                    (<BenchMsgHeader*>out_buf)[0].crc32 = 0
+                    want_crc = bench_crc32c(out_buf, out_size, 0xFFFFFFFF)
+                    (<BenchMsgHeader*>out_buf)[0].crc32 = got_crc
                     if hdr.magic != BENCH_MAGIC or hdr.payload_size != out_size or got_crc != want_crc:
                         a.corrupt_count += 1
             elif pair == PAIR_PUSH_VAR_POP_VAR or pair == PAIR_TRY_PUSH_VAR_POP_VAR:
