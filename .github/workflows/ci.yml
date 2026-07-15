@@ -34,17 +34,14 @@ jobs:
       - name: Debug (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get install -y gdb
           cd tests/logging_handlers
 
           echo "=== ldd output ==="
           ldd ../../cykit/cylogger/cylogger*.so
 
-          echo "=== LD_DEBUG=libs ==="
-          LD_DEBUG=libs python run.py 2>&1 | grep -i error || true
-
           echo "=== gdb backtrace ==="
-          sudo apt-get install -y gdb
-          gdb -ex run -ex "thread apply all bt" -ex quit --args python -m pytest
+          gdb -batch -ex "set pagination off" -ex run -ex "thread apply all bt full" -ex quit --args python -u debug_run.py
 
       - name: Run test suite
         run: pytest tests/ -vvv -s --tb=long --showlocals --setup-show
