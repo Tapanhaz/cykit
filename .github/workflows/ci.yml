@@ -29,7 +29,7 @@ jobs:
           pip install setuptools wheel Cython cmake pytest
 
       - name: Build and install cykit
-        run: pip install -e . -v
+        run: DEBUG=1 pip install -e . -v
 
       - name: Debug (Linux)
         if: runner.os == 'Linux'
