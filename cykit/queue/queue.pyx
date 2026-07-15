@@ -12,7 +12,7 @@
 from libc.stdint  cimport uint64_t, uint32_t, uint16_t
 from libc.stddef  cimport size_t
 from libc.string  cimport memcpy, memset
-from libc.stdlib  cimport free, realloc
+from libc.stdlib  cimport free, realloc, malloc
 
 from cykit.common cimport (
     atomic_thread_fence,
@@ -153,6 +153,9 @@ cdef inline void consumer_update_min(QueueImpl* q) noexcept nogil:
         cpu_pause()
 
 
+cdef inline int _stage_slot(ConsumerCtx* cctx, char* src, size_t size) noexcept nogil:
+    memcpy(cctx.scratch_buf, src, size)
+
 cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
             bint needs_publish, uint8_t init_flags) noexcept nogil:
     cdef:
@@ -183,6 +186,11 @@ cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
         q.slots[i].seq_id       = 0
         q.slots[i].chunk_idx    = 0
         q.slots[i].total_chunks = 0
+
+    q.consumer_ctx[0].value.scratch_buf = <char*>malloc(slot_size)
+    if q.consumer_ctx[0].value.scratch_buf == NULL:
+        return Q_ERR
+    q.consumer_ctx[0].value.scratch_cap = slot_size
 
     if needs_publish:
         q.publish = <PublishEntry*>aligned_alloc_(CACHELINE, capacity * sizeof(PublishEntry))
@@ -240,6 +248,9 @@ cdef void queue_destroy(void* ctx) noexcept nogil:
         if q.consumer_ctx[i].value.assemble_buf != NULL:
             free(q.consumer_ctx[i].value.assemble_buf)
             q.consumer_ctx[i].value.assemble_buf = NULL
+        if q.consumer_ctx[i].value.scratch_buf != NULL:
+            free(q.consumer_ctx[i].value.scratch_buf)
+            q.consumer_ctx[i].value.scratch_buf = NULL
 
     if q.slots     != NULL: 
         aligned_free_(q.slots)
@@ -259,6 +270,7 @@ cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
         QueueImpl* q = <QueueImpl*>ctx
         uint64_t mask, bit
         uint32_t i
+        char* sbuf
 
     while True:
         mask = q.reader_active_mask.value.load(memory_order_acquire)
@@ -267,6 +279,18 @@ cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
         i    = builtin_ctzll(~mask)
         bit  = (<uint64_t>1) << i
         if _cas_u64(&q.reader_active_mask.value, &mask, mask | bit):
+            if q.consumer_ctx[i].value.scratch_buf == NULL:
+                sbuf = <char*>malloc(q.slot_size)
+                if sbuf == NULL:
+                    mask = q.reader_active_mask.value.load(memory_order_acquire)
+                    while True:
+                        if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~bit):
+                            break
+                        cpu_pause()
+                    return Q_ERR
+                q.consumer_ctx[i].value.scratch_buf = sbuf
+                q.consumer_ctx[i].value.scratch_cap = q.slot_size
+
             q.reader_pos[i].value.store(
                 q.tail.load(memory_order_acquire), memory_order_release
             )
@@ -299,6 +323,11 @@ cdef void unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
         free(q.consumer_ctx[reader_id].value.assemble_buf)
         q.consumer_ctx[reader_id].value.assemble_buf = NULL
         q.consumer_ctx[reader_id].value.assemble_cap = 0
+    
+    if q.consumer_ctx[reader_id].value.scratch_buf != NULL:
+        free(q.consumer_ctx[reader_id].value.scratch_buf)
+        q.consumer_ctx[reader_id].value.scratch_buf = NULL
+        q.consumer_ctx[reader_id].value.scratch_cap = 0
 
     while True:
         mask = q.reader_active_mask.value.load(memory_order_acquire)
@@ -546,6 +575,7 @@ cdef int spsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
 
@@ -564,10 +594,13 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         idx  = head & q.capacity_mask
         slot = &q.slots[idx]
 
-        out_buf[0]  = slot.buf
+        atomic_thread_fence(memory_order_acquire)
+
+        _stage_slot(st, slot.buf, slot.size)
+
+        out_buf[0]  = st.scratch_buf
         out_size[0] = slot.size
 
-        atomic_thread_fence(memory_order_acquire)
         q.head.store(head + 1, memory_order_release)
         atomic_notify_one(&q.head, &q.head_wm)
         return Q_OK
@@ -578,6 +611,7 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 cdef int spsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
 
@@ -597,6 +631,12 @@ cdef int spsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
     out_size[0] = slot.size
 
     atomic_thread_fence(memory_order_acquire)
+
+    _stage_slot(st, slot.buf, slot.size)
+
+    out_buf[0]  = st.scratch_buf
+    out_size[0] = slot.size
+
     q.head.store(head + 1, memory_order_release)
     
     atomic_notify_one(&q.head, &q.head_wm)
@@ -821,7 +861,7 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + 1, memory_order_release)
-        atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+        #atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
@@ -859,7 +899,7 @@ cdef int mpsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
 
     atomic_thread_fence(memory_order_release)
     q.publish[idx].seq.store(tail + 1, memory_order_release)
-    atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+    #atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
     atomic_notify_all(&q.tail, &q.tail_wm)
     return Q_OK
 
@@ -920,7 +960,7 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             atomic_thread_fence(memory_order_release)
             q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
             
-            atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+            #atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
             atomic_notify_all(&q.tail, &q.tail_wm)
 
         return Q_OK
@@ -972,7 +1012,7 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 
         atomic_thread_fence(memory_order_release)
         q.publish[idx].seq.store(tail + chunk_idx + 1, memory_order_release)
-        atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
+        #atomic_notify_all(&q.publish[idx].seq, &q.publish[idx].seq_wm)
         atomic_notify_all(&q.tail, &q.tail_wm)
 
     return Q_OK
@@ -984,6 +1024,7 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
 cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
 
@@ -1007,7 +1048,9 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         slot = &q.slots[idx]
         atomic_thread_fence(memory_order_acquire)
 
-        out_buf[0]  = slot.buf
+        _stage_slot(st, slot.buf, slot.size)
+
+        out_buf[0]  = st.scratch_buf
         out_size[0] = slot.size
 
         q.head.store(head + 1, memory_order_release)
@@ -1020,6 +1063,7 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 cdef int mpsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
         uint64_t head, tail, idx
         QueueSlot* slot
 
@@ -1040,7 +1084,9 @@ cdef int mpsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
     slot = &q.slots[idx]
     atomic_thread_fence(memory_order_acquire)
 
-    out_buf[0]  = slot.buf
+    _stage_slot(st, slot.buf, slot.size)
+
+    out_buf[0]  = st.scratch_buf
     out_size[0] = slot.size
 
     q.head.store(head + 1, memory_order_release)
@@ -1252,6 +1298,7 @@ cdef inline int _mc_pop_impl(
     uint32_t   rid,
 ) noexcept nogil:
     cdef:
+        ConsumerCtx* st = &q.consumer_ctx[rid].value
         uint64_t   pos, tail, idx
         QueueSlot* slot
 
@@ -1275,7 +1322,9 @@ cdef inline int _mc_pop_impl(
         slot = &q.slots[idx]
         atomic_thread_fence(memory_order_acquire)
 
-        out_buf[0]  = slot.buf
+        _stage_slot(st, slot.buf, slot.size)
+
+        out_buf[0]  = st.scratch_buf
         out_size[0] = slot.size
 
         q.reader_pos[rid].value.store(pos + 1, memory_order_release)
@@ -1294,6 +1343,7 @@ cdef inline int _mc_try_pop_impl(
     uint32_t   rid,
 ) noexcept nogil:
     cdef:
+        ConsumerCtx* st = &q.consumer_ctx[rid].value
         uint64_t   pos, tail, idx
         QueueSlot* slot
 
@@ -1314,7 +1364,9 @@ cdef inline int _mc_try_pop_impl(
     slot = &q.slots[idx]
     atomic_thread_fence(memory_order_acquire)
 
-    out_buf[0]  = slot.buf
+    _stage_slot(st, slot.buf, slot.size)
+
+    out_buf[0]  = st.scratch_buf
     out_size[0] = slot.size
 
     q.reader_pos[rid].value.store(pos + 1, memory_order_release)

@@ -60,6 +60,8 @@ cdef struct ConsumerCtx:
     size_t   assemble_cap
     uint64_t discard_count
     uint64_t resync_count
+    char*    scratch_buf
+    size_t   scratch_cap
 
 
 cdef struct QueueImpl:
