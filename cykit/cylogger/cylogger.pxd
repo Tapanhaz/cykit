@@ -137,6 +137,8 @@ cdef extern from "spdlog_logger.hpp" nogil:
         SpdLogger(shared_ptr[logger]) except + nogil
         shared_ptr[logger]& get_logger() except + nogil
 
+        void flush() except+ nogil
+
         void trace(const char* msg, ...) except + nogil
         void trace(int color, const char* msg, ...) except + nogil
         void trace(int fg_color, int bg_color, const char* msg, ...) except + nogil
@@ -466,6 +468,8 @@ cdef class Logger:
     
     cdef SpdLogger get_logger(self)
 #    cpdef void close(self)
+
+    cpdef void flush(self)
 
     cpdef void trace(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void debug(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)

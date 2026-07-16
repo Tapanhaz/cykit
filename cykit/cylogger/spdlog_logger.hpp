@@ -699,6 +699,10 @@ public:
     std::shared_ptr<spdlog::logger>& get_logger() { return _logger; }  
     const std::shared_ptr<spdlog::logger>& get_logger() const { return _logger; }
 
+    void flush() {
+        _logger->flush();
+    }
+
     void trace(const char* msg, ...) {
         va_list args;
         va_start (args, msg);

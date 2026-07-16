@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-26.04
+          - os: ubuntu-24.04
           - os: windows-2025-vs2026
           - os: macos-15
 
@@ -29,7 +29,21 @@ jobs:
           pip install setuptools wheel Cython cmake pytest
 
       - name: Build and install cykit
+        env:
+          DEBUG: "1"
         run: pip install -e . -v
 
+      - name: Debug (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y gdb
+          cd tests/logging_handlers
+
+          echo "=== ldd output ==="
+          ldd ../../cykit/cylogger/cylogger*.so
+
+          echo "=== gdb backtrace ==="
+          gdb -batch -ex "set pagination off" -ex run -ex "thread apply all bt full" -ex quit --args python -u debug_run.py
+
       - name: Run test suite
-        run: pytest tests/ -v
+        run: pytest tests/ -vvv -s --tb=long --showlocals --setup-show

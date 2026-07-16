@@ -1064,6 +1064,9 @@ cdef class Logger:
         
     cdef SpdLogger get_logger(self):
         return self._logger    
+
+    cpdef void flush(self):
+        self._logger.flush()
     
     cpdef void trace(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
         cdef:

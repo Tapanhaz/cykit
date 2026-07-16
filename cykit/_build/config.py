@@ -2,6 +2,7 @@ import os
 import platform
 from pathlib import Path
 from dataclasses import dataclass, field
+from setuptools._distutils import ccompiler, sysconfig
 import subprocess
 
 
@@ -9,8 +10,10 @@ import subprocess
 class BuildConfig:
     use_sys_boost: bool
     debug: bool
-    ext_debug: bool
+    debug_asan: bool
+    debug_tsan: bool
     optimize: bool
+    compiler_family: str
 
     _openssl_cache: dict = field(
                             default_factory=dict, 
@@ -27,16 +30,40 @@ class BuildConfig:
         return cls(
             use_sys_boost=cls.get_env_flag("USE_SYS_BOOST"),
             debug=cls.get_env_flag("DEBUG"),
-            ext_debug=cls.get_env_flag("EXT_DEBUG"),
+            debug_asan=cls.get_env_flag("DEBUG_ASAN"),
+            debug_tsan=cls.get_env_flag("DEBUG_TSAN"),
             optimize=cls.get_env_flag("OPTIMIZE"),
+            compiler_family=cls._detect_compiler_family(),
         )
 
     def __repr__(self) -> str:
         return (
             f"BuildConfig(use_sys_boost={self.use_sys_boost}, "
-            f"debug={self.debug}, ext_debug={self.ext_debug}, "
-            f"optimize={self.optimize})"
+            f"debug={self.debug}, debug_asan={self.debug_asan}, "
+            f"debug_tsan={self.debug_tsan}, "
+            f"optimize={self.optimize}, "
+            f"compiler={self.compiler_family})"
         )
+
+    @staticmethod
+    def _detect_compiler_family() -> str:
+        comp = ccompiler.new_compiler()
+        sysconfig.customize_compiler(comp)
+
+        if comp.compiler_type == 'msvc':
+            return "msvc"
+        
+        raw_name = comp.compiler_cxx[0]
+        base_name = os.path.basename(raw_name).lower()
+        
+        if 'clang' in base_name:
+            return "clang"
+        elif 'g++' in base_name or 'gcc' in base_name:
+            return "gcc"
+        elif 'icpx' in base_name or 'icpc' in base_name:
+            return "intel"
+            
+        return base_name
     
     @staticmethod
     def _resolve_cmake_lib(raw: str) -> str:
@@ -176,7 +203,9 @@ class BuildConfig:
         root = self.get_package_root()
         inc_dirs = [
             str(root / "cykit" / "cylogger"), 
-            str(root / "cykit" / "utils" / "transport")
+            str(root / "cykit" / "utils" / "transport"),
+            str(root / "cykit" / "utils" / "atomic"),
+            str(root / "cykit" / "queue")
         ]
         vendor_inc = self.get_vendor_include_dir()
         if vendor_inc:
@@ -209,8 +238,13 @@ class BuildConfig:
                 "/W3",
             ]
 
-            if self.ext_debug:
+            if self.debug_asan:
                 flags.extend(["/Od", "/Zi", "/RTC1", "/fsanitize=address", "/MDd"])
+
+            elif self.debug_tsan:
+                flags.extend(["/Od", "/Zi", "/MDd"])
+                if self.compiler_family != "msvc":
+                    flags.append("/fsanitize=thread")
 
             else:
                 flags.extend(
@@ -241,13 +275,24 @@ class BuildConfig:
                     ]
                 )
 
-            if self.ext_debug:
+            if self.debug_asan:
                 flags.extend(
                     [
                         "-O1",
                         "-g",
                         "-fno-omit-frame-pointer",
                         "-fsanitize=address,undefined",
+                        "-fno-sanitize-recover=all",
+                    ]
+                )
+
+            elif self.debug_tsan:
+                flags.extend(
+                    [
+                        "-O1",
+                        "-g",
+                        "-fno-omit-frame-pointer",
+                        "-fsanitize=thread",
                         "-fno-sanitize-recover=all",
                     ]
                 )
@@ -278,12 +323,18 @@ class BuildConfig:
         system = platform.system()
 
         if system == "Windows":
-            if self.ext_debug:
+            if self.debug_asan:
                 return [
                     "/DEBUG",
                     "/INCREMENTAL:NO",
                     "/fsanitize=address",
                 ]
+            elif self.debug_tsan:
+                flags = ["/DEBUG", "/INCREMENTAL:NO"]
+            
+                if self.compiler_family != "msvc":
+                    flags.append("/fsanitize=thread")
+                return flags
             else:
                 return [
                     "/LTCG",
@@ -293,10 +344,17 @@ class BuildConfig:
 
         flags = ["-Wl,-O1"]
 
-        if self.ext_debug:
+        if self.debug_asan:
             flags.extend(
                 [
                     "-fsanitize=address,undefined",
+                ]
+            )
+
+        elif self.debug_tsan:
+            flags.extend(
+                [
+                    "-fsanitize=thread",
                 ]
             )
 
@@ -310,10 +368,10 @@ class BuildConfig:
         else:
             flags.append("-Wl,--gc-sections")
 
-            if not self.debug and not self.ext_debug:
-                flags.append("-s")
+            if not self.debug and not self.debug_asan and not self.debug_tsan:
+                 flags.append("-s")
 
-        if self.optimize and not self.ext_debug and not self.debug:
+        if self.optimize and not self.debug_asan and not self.debug_tsan and not self.debug:
             flags.append("-flto")
 
         return flags
@@ -324,7 +382,7 @@ class BuildConfig:
             "embedsignature": True,
         }
 
-        if self.optimize and not self.ext_debug and not self.debug:
+        if self.optimize and not self.debug_asan and not self.debug_tsan and not self.debug:
             comp_directives.update(
                 {
                     "boundscheck": False,

@@ -1,7 +1,5 @@
-import pathlib
 import sys
-
-import pytest
+import pathlib
 import pyximport
 from setuptools import Extension
 from Cython.Distutils import build_ext
@@ -20,19 +18,11 @@ pyximport.install(
     inplace=True,
     setup_args={
         "ext_modules": [
-            Extension(
-                name="queuetest",
-                sources=[str(TESTS_DIR / "queuetest.pyx")],
-                **kwargs,
-            )
+            Extension(name="bench", sources=[str(TESTS_DIR / "bench.pyx")], **kwargs)
         ],
         "cmdclass": {"build_ext": build_ext},
     },
+    build_in_temp=False,
 )
 
-import queuetest as qmod
-
-
-@pytest.fixture(scope="session")
-def queue_module():
-    return qmod
+import bench  # type: ignore  # noqa: E402, F401

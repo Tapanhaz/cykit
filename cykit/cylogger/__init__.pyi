@@ -284,6 +284,7 @@ class Logger:
     """
     intercept_stdlib_logging will work only when set_default= True
     """
+    def flush(self) -> None: ...
     def trace(
         self,
         msg: object,

@@ -1,5 +1,13 @@
+import subprocess
 import sys
+from pathlib import Path
+
+
+def test_log_objects():
+    tests_dir = Path(__file__).resolve().parent
+    script = """
 import os
+import sys
 
 if sys.platform == "win32":
     from cykit._build.config import config
@@ -9,18 +17,15 @@ if sys.platform == "win32":
         os.add_dll_directory(_bin)
 
 from cykit.cylogger import Logger, LogLevel
-
 logger = Logger("default", level=LogLevel.DEBUG)
-
-
-def test_log_objects():
-    r, w = os.pipe()
-
-    os.dup2(w, 1)
-
-    logger.info({"a": 1})
-
-    os.close(w)
-    output = os.read(r, 1024).decode()
-
-    assert "{'a': 1}" in output
+logger.info({"a": 1})
+"""
+    result = subprocess.run(
+        [sys.executable, "-u", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=tests_dir,
+        timeout=5,
+    )
+    assert result.returncode == 0, f"Subprocess failed:\n{result.stderr}"
+    assert "{'a': 1}" in result.stdout
