@@ -12,7 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-26.04
+          - os: ubuntu-24.04
           - os: windows-2025-vs2026
           - os: macos-15
 
@@ -29,7 +29,9 @@ jobs:
           pip install setuptools wheel Cython cmake pytest
 
       - name: Build and install cykit
-        run: DEBUG=1 pip install -e . -v
+        env:
+          DEBUG: "1"
+        run: pip install -e . -v
 
       - name: Debug (Linux)
         if: runner.os == 'Linux'
