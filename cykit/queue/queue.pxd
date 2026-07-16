@@ -178,6 +178,7 @@ cdef int queue_close(void* ctx, long timeout_ms = ?) noexcept nogil
 cdef class Queue:
     cdef:
         QueueImpl _q
+        bint _signal_registered
         
     cdef int push(self, const char* data, size_t size) noexcept nogil
     cdef int try_push(self, const char* data, size_t size) noexcept nogil

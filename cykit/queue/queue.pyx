@@ -24,7 +24,8 @@ from cykit.common cimport (
     cpu_pause,
     builtin_ctzll,
     placement_new,
-    placement_destroy
+    placement_destroy,
+    is_power_of_two
 )
 
 from cykit.utils.atomic cimport (
@@ -162,9 +163,12 @@ cdef int queue_init(void* ctx, size_t slot_size, size_t capacity,
         QueueImpl* q = <QueueImpl*>ctx
         size_t i
 
-    if capacity == 0 or (capacity & (capacity - 1)) != 0:
-        return Q_ERR
-    if slot_size == 0:
+    #if capacity == 0 or (capacity & (capacity - 1)) != 0:
+    #    return Q_ERR
+    #if slot_size == 0:
+    #    return Q_ERR
+
+    if not is_power_of_two(<uint32_t>capacity) or not is_power_of_two(<uint32_t>slot_size):
         return Q_ERR
 
     placement_new[QueueImpl](ctx)
@@ -2050,6 +2054,9 @@ cdef class Queue:
             bint      zerocopy      = False,
             bint      block_on_full = False,
         ):
+
+        self._signal_registered = False 
+        
         cdef uint8_t init_flags = (
             (F_OVERWRITE     if overwrite     else 0) |
             (F_ZEROCOPY      if zerocopy      else 0) |
@@ -2120,6 +2127,7 @@ cdef class Queue:
             NULL,
             <context_notify_fn>queue_notify,
         )
+        self._signal_registered = True
 
     cdef int push(self, const char* data, size_t size) noexcept nogil:
         return self._q.fn_push(<void*>&self._q, data, size)
@@ -2162,6 +2170,9 @@ cdef class Queue:
 
     def __dealloc__(self):
         self.close()
-        unregister_context_notify(<void*>&self._q)
-        cleanup_signal_handler()
+
+        if self._signal_registered:
+            unregister_context_notify(<void*>&self._q)
+            cleanup_signal_handler()
+
         queue_destroy(<void*>&self._q)
