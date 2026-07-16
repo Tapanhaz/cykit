@@ -2086,7 +2086,8 @@
                                      : TransportErrorKind::Connect,
                          ec.value());
      
-                     disconnect_locked();
+                     //disconnect_locked();
+                     disconnect();
      
                      if (!rp.should_retry_error(last_err) ||
                          attempt + 1 >= rp.max_attempts) {
