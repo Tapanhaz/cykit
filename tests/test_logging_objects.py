@@ -9,7 +9,7 @@ def test_log_objects():
 import os
 import sys
 
-if sys.platform != "win32":
+if sys.platform == "win32":
     from cykit._build.config import config
 
     _bin = config._get_openssl_bin_dir()
