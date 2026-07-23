@@ -192,12 +192,12 @@ cdef class CyPipe:
 
 
 
-cdef enum MsgKind:
-    MSG_BYTES  = 0
-    MSG_STR    = 1
-    MSG_BUF    = 2
-    MSG_OBJ    = 3
-    MSG_MIXED  = 4
+cpdef enum class MsgKind:
+    BYTES  = 0
+    STR    = 1
+    BUF    = 2
+    OBJ    = 3
+    MIXED  = 4
 
 ctypedef int (*cb_load_fn_t)(CBufferView, object) except -1
 
@@ -209,20 +209,20 @@ cdef int bytes_to_cbuf(object msg, const char** data, size_t* size) except -1
 
 cdef class CBufferView:
     cdef:
-        const char* _data 
-        size_t      _size 
-        int         _kind
+        const char* data 
+        size_t      size 
 
         Py_buffer   _view
         PyObject*   _pb
 
-        cb_load_fn_t     load
-        
+        cb_load_fn_t   _load
+    
+    cdef inline int load(self, object msg) except -1
     cdef inline int _load_bytes(self, object msg) except -1
     cdef inline int _load_buf(self, object msg) except -1
     cdef inline int _load_str(self, object msg) except -1
     cdef inline int _load_obj(self, object msg) except -1
-    cdef inline int _load(self, object msg) except -1
+    cdef inline int _load_mixed(self, object msg) except -1
 
 
 

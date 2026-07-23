@@ -29,6 +29,10 @@ from cykit.common cimport (
     PyBytes_AS_STRING,
     PyBytes_GET_SIZE,
     PyObject_CheckBuffer,
+    PyObject_Str, 
+    PyErr_Clear, 
+    PyBytes_CheckExact, 
+    PyUnicode_CheckExact,
     PyObject,
     Py_INCREF,
     Py_DECREF,
@@ -38,13 +42,9 @@ from cykit.common cimport (
     memory_order_seq_cst
 )
 from libc.errno cimport errno, EPERM, EACCES
-from cykit.cylogger import DefaultLogger
 
 import asyncio
 import sys
-
-logger = DefaultLogger()
-
 
 cpdef object setup_socket(bint blocking, int recvbuf):
     import socket as _socket
@@ -59,18 +59,18 @@ cpdef object setup_socket(bint blocking, int recvbuf):
                 sock.setsockopt(_socket.SOL_SOCKET, 33, recvbuf) #SO_RCVBUFFORCE 
             except OSError as e:
                 if e.errno in (EPERM, EACCES):
-                    logger.warn(
+                    print(
                         "SO_RCVBUFFORCE needs CAP_NET_ADMIN "
                         "(sudo or setcap). Falling back to SO_RCVBUF."
                     )
                 else:
-                    logger.warn(f"WARNING: SO_RCVBUFFORCE failed ({e}). Falling back.")
+                    print(f"WARNING: SO_RCVBUFFORCE failed ({e}). Falling back.")
 
                 sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, recvbuf)
         else:
             sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF, recvbuf)
         
-    logger.debug(f"SO_RCVBUF= {sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF)}")
+    #print(f"SO_RCVBUF= {sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_RCVBUF)}")
 
     return sock
 
@@ -528,20 +528,65 @@ cdef inline int str_to_cbuf(
     return 0
 
 
+#cdef inline int obj_to_cbuf(
+#        object msg,
+#        PyObject** pb,
+#        const char** data,
+#        size_t* size
+#    ) except -1:
+#
+#    pb[0] = PyObject_Bytes(<PyObject*>msg)
+#    if pb[0] == NULL:
+#        return -1
+#
+#    data[0] = PyBytes_AS_STRING(pb[0])
+#    size[0] = PyBytes_GET_SIZE(pb[0])
+#
+#    return 0
+
 cdef inline int obj_to_cbuf(
         object msg,
         PyObject** pb,
         const char** data,
         size_t* size
     ) except -1:
+    cdef Py_ssize_t n
+
+    if PyBytes_CheckExact(<PyObject*>msg):
+        pb[0] = <PyObject*>msg
+        Py_INCREF(pb[0])
+        data[0] = PyBytes_AS_STRING(pb[0])
+        size[0] = <size_t>PyBytes_GET_SIZE(pb[0])
+        return 0
+
+    if PyUnicode_CheckExact(<PyObject*>msg):
+        pb[0] = <PyObject*>msg
+        Py_INCREF(pb[0])
+        data[0] = <char*>PyUnicode_AsUTF8AndSize(pb[0], &n)
+        if data[0] == NULL:
+            Py_DECREF(pb[0])
+            pb[0] = NULL
+            return -1
+        size[0] = <size_t>n
+        return 0
 
     pb[0] = PyObject_Bytes(<PyObject*>msg)
-    if pb[0] == NULL:
+    if pb[0] != NULL:
+        data[0] = PyBytes_AS_STRING(pb[0])
+        size[0] = <size_t>PyBytes_GET_SIZE(pb[0])
+        return 0
+
+    PyErr_Clear()
+
+    pb[0] = PyObject_Str(<PyObject*>msg)
+
+    data[0] = <char*>PyUnicode_AsUTF8AndSize(pb[0], &n)
+    if data[0] == NULL:
+        Py_DECREF(pb[0])
+        pb[0] = NULL
         return -1
 
-    data[0] = PyBytes_AS_STRING(pb[0])
-    size[0] = PyBytes_GET_SIZE(pb[0])
-
+    size[0] = <size_t>n
     return 0
 
 cdef inline int bytes_to_cbuf(
@@ -560,46 +605,47 @@ cdef inline int bytes_to_cbuf(
 cdef class CBufferView:    
     
     def __cinit__(self):
-        self._data = NULL
-        self._size = 0
+        self.data = NULL
+        self.size = 0
         self._pb = NULL
         self._view.buf = NULL
     
-    def __init__(self, int msg_kind=4) -> None:
-        
-        self._kind = msg_kind
+    def __init__(self, MsgKind msg_kind=MsgKind.MIXED) -> None:       
 
-        if self._kind == MsgKind.MSG_BYTES:
-            self.load = <cb_load_fn_t>self._load_bytes
-        elif self._kind == MsgKind.MSG_BUF:
-            self.load = <cb_load_fn_t>self._load_buf
-        elif self._kind == MsgKind.MSG_STR:
-            self.load = <cb_load_fn_t>self._load_str
-        elif self._kind == MsgKind.MSG_OBJ:
-            self.load = <cb_load_fn_t>self._load_obj 
+        if msg_kind == MsgKind.BYTES:
+            self._load = <cb_load_fn_t>self._load_bytes
+        elif msg_kind == MsgKind.BUF:
+            self._load = <cb_load_fn_t>self._load_buf
+        elif msg_kind == MsgKind.STR:
+            self._load = <cb_load_fn_t>self._load_str
+        elif msg_kind == MsgKind.OBJ:
+            self._load = <cb_load_fn_t>self._load_obj 
         else:
-            self.load = <cb_load_fn_t>self._load    
+            self._load = <cb_load_fn_t>self._load_mixed  
+
+    cdef inline int load(self, object msg) except -1:
+        return self._load(self, msg)  
     
     cdef inline int _load_bytes(self, object msg) except -1:
-        return bytes_to_cbuf(msg, &self._data, &self._size)
+        return bytes_to_cbuf(msg, &self.data, &self.size)
     
     cdef inline int _load_buf(self, object msg) except -1:
         if self._view.buf != NULL:
             PyBuffer_Release(&self._view)
 
-        return buf_to_cbuf(msg, &self._view, &self._data, &self._size)
+        return buf_to_cbuf(msg, &self._view, &self.data, &self.size)
 
     cdef inline int _load_str(self, object msg) except -1:
-        return str_to_cbuf(msg, &self._data, &self._size)
+        return str_to_cbuf(msg, &self.data, &self.size)
     
     cdef inline int _load_obj(self, object msg) except -1:
         if self._pb != NULL:
             Py_DECREF(self._pb)
             self._pb = NULL
 
-        return obj_to_cbuf(msg, &self._pb, &self._data, &self._size)
+        return obj_to_cbuf(msg, &self._pb, &self.data, &self.size)
 
-    cdef inline int _load(self, object msg) except -1:
+    cdef inline int _load_mixed(self, object msg) except -1:
         if isinstance(msg, bytes):
             return self._load_bytes(msg)
         elif isinstance(msg, str):
