@@ -249,9 +249,9 @@ cdef void py_unregister_consumer(void*, uint32_t)  noexcept nogil
 cdef int  py_register_producer(void*, uint32_t*) noexcept nogil
 cdef void py_unregister_producer(void*, uint32_t)  noexcept nogil
 
-cdef inline int spsc_py_push(void*, object)  except -1
+cdef int spsc_py_push(void*, object)  except -1
 cdef int spsc_py_try_push(void*, object)  except -1
-cdef inline int spsc_py_pop(void*, PyObject**) except -1
+cdef int spsc_py_pop(void*, PyObject**) except -1
 cdef int spsc_py_try_pop (void*, PyObject**) except -1
 
 cdef int spmc_py_push(void*, object)  except -1
