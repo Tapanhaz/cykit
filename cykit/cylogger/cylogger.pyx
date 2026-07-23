@@ -149,7 +149,7 @@ cdef class UserSinkBase(LogHandler):
     def __init__(
         self,
         str            pattern,
-        LogLevel          level,
+        LogLevel       level,
         size_t         queue_capacity,
         size_t         max_msg_size,
         OverflowPolicy overflow_policy,    
@@ -162,13 +162,10 @@ cdef class UserSinkBase(LogHandler):
 
         super().__init__(False, pattern, level)
 
+        self._running.store(False, memory_order_relaxed)
         self._queue_capacity  = queue_capacity
         self._max_msg_size    = max_msg_size
         self._overflow_policy = overflow_policy
-        self._detach          = detach
-        self._running.store(True, memory_order_relaxed)
-
-        self._queue_close_delay_ms = close_timeout_ms
 
         self._queue = Queue(
             slot_size     = max_msg_size,
@@ -178,7 +175,10 @@ cdef class UserSinkBase(LogHandler):
             zerocopy      = False,
             block_on_full = block_on_full,
         )
-        
+
+        self._detach          = detach
+        self._running.store(True, memory_order_relaxed)
+        self._queue_close_delay_ms = close_timeout_ms        
 
     cdef void _start_worker(self, worker_fn_t fn) noexcept nogil:
         self._thread = make_thread(fn, <void*>self)
