@@ -257,6 +257,18 @@ cdef extern from *:
     void placement_destroy[T](void* p) noexcept nogil
 
 
+cdef extern from *:
+    """
+    #ifdef _WIN32
+    #include <winsock2.h>
+    #else
+    #include <arpa/inet.h>
+    #endif
+    """
+    uint32_t htonl(uint32_t hostlong) nogil
+    uint32_t ntohl(uint32_t netlong) nogil
+
+
 cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
     return n != 0 and (n & (n - 1)) == 0
 
