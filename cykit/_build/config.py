@@ -380,6 +380,7 @@ class BuildConfig:
         comp_directives = {
             "language_level": "3",
             "embedsignature": True,
+            "freethreading_compatible": True
         }
 
         if self.optimize and not self.debug_asan and not self.debug_tsan and not self.debug:
@@ -430,7 +431,7 @@ class BuildConfig:
                     kwargs["include_dirs"].append(d)
             extra_objs = self._get_openssl_extra_objects()
             if extra_objs:
-                kwargs["extra_objects"] = extra_objs
+                kwargs["extra_objects"] = extra_objs        
         return kwargs
 
 
