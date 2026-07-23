@@ -113,11 +113,12 @@ def _gen_var_payload_sizes(int min_sz, int max_sz, int count=32):
 cdef struct ProducerArgs:
     QueueImpl* q
     BenchPair  pair
+    bint       needs_register
     uint64_t   num_messages
     uint32_t   producer_id
     uint32_t*  size_table   
     int        table_len
-    size_t     fixed_size   # fixed pairs only
+    size_t     fixed_size 
     uint64_t   pushed
     uint64_t   total_bytes
     double     mps
@@ -164,6 +165,12 @@ cdef void _producer_thread(ProducerArgs* a) noexcept nogil:
         return
 
     memset(payload, 0xAA, pay_sz)
+
+    if a.needs_register:
+        rc = q.fn_register_producer(<void*>q, &a.producer_id)
+        if rc != Q_OK:
+            printf(b"[PRODUCER] register_producer failed: %d\n", rc)
+            return
 
     printf(b"[PRODUCER] Starting: pair=%d  messages=%llu  payload=%zu\n",
            <int>pair, <unsigned long long>a.num_messages,
@@ -219,6 +226,9 @@ cdef void _producer_thread(ProducerArgs* a) noexcept nogil:
 
     a.mps  = (<double>a.pushed * 1e9) / <double>elapsed
     a.gbps = (<double>a.total_bytes / <double>elapsed)
+
+    if a.needs_register:
+        q.fn_unregister_producer(<void*>q, a.producer_id)
     free(payload)
 
 
@@ -369,6 +379,7 @@ cpdef run_queue_bench(
         BenchPair p     = <BenchPair>pair
         bint is_var     = (p == PAIR_PUSH_VAR_POP_VAR or p == PAIR_TRY_PUSH_VAR_POP_VAR)
         bint needs_reg  = (qmode == QueueMode.SPMC or qmode == QueueMode.MPMC)
+        bint needs_prod_register = qmode != QueueMode.SPSC
         uint32_t min_sz = <uint32_t>slot_size
         uint32_t max_sz
         int i, j
@@ -402,6 +413,7 @@ cpdef run_queue_bench(
         memset(&pargs[i], 0, sizeof(ProducerArgs))
         pargs[i].q            = qimpl
         pargs[i].pair         = p
+        pargs[i].needs_register = needs_prod_register
         pargs[i].num_messages = num_messages
         pargs[i].producer_id  = <uint32_t>i
 
