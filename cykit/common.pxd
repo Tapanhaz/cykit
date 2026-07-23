@@ -19,6 +19,9 @@ cdef extern from "Python.h":
     PyObject* PyUnicode_FromString(const char*)
     PyObject* PyUnicode_Format(PyObject* format, PyObject* args) except NULL
     const char* PyUnicode_AsUTF8(PyObject* unicode) except NULL
+
+    int PyBytes_CheckExact(PyObject* o)
+    int PyUnicode_CheckExact(PyObject* o)
     
     PyObject* PyObject_CallFunctionObjArgs(PyObject*, ...)
     int Py_AddPendingCall(int (*func)(void*), void*)
