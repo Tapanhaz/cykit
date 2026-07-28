@@ -24,6 +24,7 @@ stdlib logging interception, and network delivery.
 
 import traceback
 import logging as py_logging
+cimport cython
 from cykit.common cimport (
     PyObject,
     Py_DECREF,
@@ -145,6 +146,7 @@ cdef class LogHandler:
         self.level = level
 
 
+@cython.no_gc_clear
 cdef class UserSinkBase(LogHandler):
     def __init__(
         self,
@@ -187,7 +189,8 @@ cdef class UserSinkBase(LogHandler):
         
     cpdef void stop(self):
         if self._running.load(memory_order_acquire):
-            self._queue.close(self._queue_close_delay_ms)
+            if self._queue is not None:
+                self._queue.close(self._queue_close_delay_ms)
 
             self._running.store(False, memory_order_seq_cst)   
             

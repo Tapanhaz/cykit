@@ -7,7 +7,6 @@ from cykit.queue cimport Queue, QueueMode, Q_OK
 from cykit.common cimport (
     atomic_bool,
     thread,
-
 )
 
 from cykit.utils.transport cimport (

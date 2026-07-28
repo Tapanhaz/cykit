@@ -20,7 +20,6 @@ from cykit.cylogger.cylogger import (
     LogLevel,
 )
 
-
 __all__ = [
     "OverflowPolicy",
     "Logger",
