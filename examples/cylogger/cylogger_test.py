@@ -61,7 +61,7 @@ def py_func():
     logger_2.critical("This is an CRITICAL msg from python main module")
 
 
-#Requests internal logs will propagate through the default logger (logger_2)
+# Requests internal logs will propagate through the default logger (logger_2)
 
 try:
     response = requests.get("https://httpbin.org/status/404", timeout=3)
