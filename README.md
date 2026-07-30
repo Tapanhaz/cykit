@@ -64,12 +64,12 @@ Benchmark configuration:
 <!-- BENCH:IPC:START -->
 | Implementation | msg/sec | MiB/sec | us/msg |
 |---------------|--------:|--------:|-------:|
-| **cykit.ipc (Cython API)** | 13,186,613 | 804.85 | 0.076 |
-| **cykit.ipc (Python API)** | 2,176,907 | 132.87 | 0.459 |
-| multiprocessing.Pipe | 709,357 | 43.30 | 1.410 |
-| multiprocessing.SimpleQueue | 247,966 | 15.13 | 4.033 |
-| multiprocessing.shared_memory (ring) | 237,530 | 14.50 | 4.210 |
-| multiprocessing.Queue | 178,702 | 10.91 | 5.596 |
+| **cykit.ipc (Cython-Cython)** | 12,641,965 | 771.60 | 0.079 |
+| **cykit.ipc (Python API)** | 3,672,439 | 231.15 | 0.272 |
+| multiprocessing.Pipe | 690,622 | 42.15 | 1.448 |
+| multiprocessing.SimpleQueue | 234,203 | 14.29 | 4.270 |
+| multiprocessing.shared_memory (ring) | 232,724 | 14.20 | 4.297 |
+| multiprocessing.Queue | 172,548 | 10.53 | 5.796 |
 <!-- BENCH:IPC:END -->
 
 ## [cykit.queue](https://github.com/Tapanhaz/cykit/tree/main/cykit/queue)
