@@ -1,6 +1,6 @@
 from cykit.ipc import Producer, ShmMode
 
-# the default msg kind is object, it uses msgspec encoder internally
+# the default msg kind is object, it uses msgspec msgpack encoder internally
 prod = Producer("demo_shm", block_size=64, mode=ShmMode.MPMC)
 
 for i in range(2000000):

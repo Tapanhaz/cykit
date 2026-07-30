@@ -1,7 +1,7 @@
 from cykit.ipc import Consumer, ShmMode, IPCClosed
 import msgspec
 
-decoder = msgspec.json.Decoder()
+decoder = msgspec.msgpack.Decoder()
 
 # The producer and consumer should be configured with same config
 # and should use same push / pop methods
