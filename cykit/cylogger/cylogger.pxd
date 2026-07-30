@@ -1,5 +1,5 @@
 
-from libc.stdint cimport uint16_t
+from libc.stdint cimport uint16_t, uint64_t
 from libcpp cimport bool as cbool
 from libcpp.string cimport string
 from libcpp.memory cimport shared_ptr
@@ -7,7 +7,6 @@ from cykit.queue cimport Queue, QueueMode, Q_OK
 from cykit.common cimport (
     atomic_bool,
     thread,
-
 )
 
 from cykit.utils.transport cimport (
@@ -172,6 +171,8 @@ cdef extern from "spdlog_logger.hpp" nogil:
 
     void registry_set_default(shared_ptr[logger] logger)
     shared_ptr[logger] registry_get_logger_ptr(const string &name, bool fallback_to_default)  
+    shared_ptr[logger] registry_get_logger_hierarchical(const string &name, bool fallback_to_default)
+    uint64_t registry_generation()
 
     ##### FOR INTERNAL LOGGGING ########################################
     void enable_internal_logger(const string& name, level_enum level, const string& pattern)
@@ -184,6 +185,7 @@ cdef extern from "spdlog_logger.hpp" nogil:
     void WARN(const char* fmt, ...)
     void ERROR(const char* fmt, ...)
     void CRITICAL(const char* fmt, ...)
+    void EXCEPTION(const char* fmt, ...)
 
     void TRACE_L(SpdLogger logger, const char* fmt, ...)
     void DEBUG_L(SpdLogger logger, const char* fmt, ...)
@@ -191,6 +193,7 @@ cdef extern from "spdlog_logger.hpp" nogil:
     void WARN_L(SpdLogger logger, const char* fmt, ...)
     void ERROR_L(SpdLogger logger, const char* fmt, ...)
     void CRITICAL_L(SpdLogger logger, const char* fmt, ...)
+    void EXCEPTION(SpdLogger logger, const char* fmt, ...)
 
     void TRACE_M(const char* logger_name, const char* fmt, ...)
     void DEBUG_M(const char* logger_name, const char* fmt, ...)
@@ -198,6 +201,7 @@ cdef extern from "spdlog_logger.hpp" nogil:
     void WARN_M(const char* logger_name, const char* fmt, ...)
     void ERROR_M(const char* logger_name, const char* fmt, ...)
     void CRITICAL_M(const char* logger_name, const char* fmt, ...)
+    void EXCEPTION(const char* logger_name, const char* fmt, ...)
 
     void TRACE_C(int color, const char* fmt, ...)
     void DEBUG_C(int color, const char* fmt, ...)
@@ -477,6 +481,7 @@ cdef class Logger:
     cpdef void warn(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void error(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void exception(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
 
 
 cdef class DefaultLogger:
@@ -486,11 +491,32 @@ cdef class DefaultLogger:
     cpdef void warn(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void error(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void exception(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+
+
+cdef class NamedLogger:
+    cdef:
+        readonly str name
+        bint      _fallback
+        uint64_t  _gen
+        SpdLogger _logger
+
+    cdef void _ensure_current(self)
+    cpdef void trace(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void debug(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void info(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void warn(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void error(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+    cpdef void exception(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
+
+cpdef NamedLogger get_logger(str name= *)
+
 
 cdef SpdLogger get_logger_by_name(const char* name)
 #cdef void get_logger_ptr(shared_ptr[logger] &logger, str name= *, bint fallback_to_default= *)
 cdef shared_ptr[logger]& get_logger_ptr(str name= *, bint fallback_to_default= *)
-cdef void get_logger(SpdLogger &log, str name= *, bint fallback_to_default= *)
+cdef void _resolve_logger_ref(SpdLogger &log, str name= *, bint fallback_to_default= *)
 
 
 

@@ -198,6 +198,10 @@ class BuildConfig:
     def get_vendor_include_dir(self) -> str:
         vendored = self.get_package_root() / "cykit" / "_vendor" / "include"
         return str(vendored) if vendored.exists() else ""
+    
+    def get_cykit_include_dir(self) -> str:
+        include_dir = self.get_package_root() / "cykit" / "include"
+        return str(include_dir) if include_dir.exists() else ""
 
     def get_include_dirs(self) -> list:
         root = self.get_package_root()
@@ -210,6 +214,9 @@ class BuildConfig:
         vendor_inc = self.get_vendor_include_dir()
         if vendor_inc:
             inc_dirs.append(vendor_inc)
+        cykit_inc = self.get_cykit_include_dir()
+        if cykit_inc:
+            inc_dirs.append(cykit_inc)
         return inc_dirs
 
     def get_library_dirs(self) -> list:
@@ -380,6 +387,7 @@ class BuildConfig:
         comp_directives = {
             "language_level": "3",
             "embedsignature": True,
+            "freethreading_compatible": True
         }
 
         if self.optimize and not self.debug_asan and not self.debug_tsan and not self.debug:
@@ -430,7 +438,7 @@ class BuildConfig:
                     kwargs["include_dirs"].append(d)
             extra_objs = self._get_openssl_extra_objects()
             if extra_objs:
-                kwargs["extra_objects"] = extra_objs
+                kwargs["extra_objects"] = extra_objs        
         return kwargs
 
 

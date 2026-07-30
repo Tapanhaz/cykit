@@ -2,7 +2,7 @@
 requires = [
   "setuptools>=82.0.1",
   "wheel",
-  "Cython>=3.2.4",
+  "Cython>=3.2.8",
   "cmake>=4.3.2"
 ]
 build-backend = "setuptools.build_meta"
@@ -22,7 +22,7 @@ authors = [
 ]
 
 requires-python = ">=3.9"
-dependencies = [ "certifi>=2026.2.25", ] 
+dependencies = [ "certifi>=2026.2.25", "msgspec>=0.21.1" ] 
 
 classifiers = [
   "Development Status :: 3 - Alpha",

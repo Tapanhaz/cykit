@@ -2,7 +2,7 @@
 
 [![PyPI version](https://badge.fury.io/py/cykit.svg?v=0.0.9)](https://badge.fury.io/py/cykit)
 [![Build Status](https://github.com/Tapanhaz/cykit/actions/workflows/release.yml/badge.svg)](https://github.com/Tapanhaz/cykit/actions)
-[![Python Versions](https://img.shields.io/badge/python-3.9%7C3.10%7C3.11%7C3.12%7C3.13%7C3.14-green)](https://pypi.org/project/cykit/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/cykit?color=green)](https://pypi.org/project/cykit/)
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Tapanhaz/cykit/blob/main/LICENSE-MIT)
 [![Apache License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/Tapanhaz/cykit/blob/main/LICENSE-APACHE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -31,9 +31,77 @@ formatting, sinks (console, file, rotating, daily, UDP, TCP, HTTP, SMTP), log le
 
 Detailed examples can be found here: [cykit/examples/cylogger](https://github.com/Tapanhaz/cykit/tree/main/examples/cylogger)
 
-### [cykit.queue (cython only)](https://github.com/Tapanhaz/cykit/tree/main/cykit/queue)
+### [cykit.ipc](https://github.com/Tapanhaz/cykit/tree/main/cykit/ipc)
 
-- Lock-free queue based on ring buffer with support for SPSC, SPMC, MPSC and MPMC modes.
+`cykit.ipc` provides a high-performance shared-memory IPC mechanism built around a ring-buffer design. 
+It supports multiple producer/consumer topologies while exposing both a native Cython API and a Python-friendly API.
+
+#### Features
+
+- Shared-memory IPC for inter-process communication.
+- Ring-buffer based message transport.
+- Supports SPSC, SPMC, MPSC and MPMC modes.
+- Native Cython API with an additional Python API.
+- Blocking and non-blocking operations.
+- Fixed-size and variable-size messages.
+- Cross-platform (Linux, Windows and macOS).
+
+Detailed examples can be found here: [cykit/examples/ipc](https://github.com/Tapanhaz/cykit/tree/main/examples/ipc)
+
+#### Performance
+
+Benchmark configuration:
+
+- 1 Producer / 1 Consumer (separate processes)
+- 64-byte fixed-size messages
+- 2,000,000 messages
+- Ubuntu Linux
+- Python 3.12
+
+> Results are measured on the author's development machine and are intended for relative comparison between implementations.
+
+![cykit.ipc Benchmark](https://github.com/Tapanhaz/cykit/tree/main/benchmarks/ipc/results/latest.png)
+<!-- BENCH:IPC:START -->
+| Implementation | msg/sec | MiB/sec | us/msg |
+|---------------|--------:|--------:|-------:|
+| **cykit.ipc (Cython API)** | 13,186,613 | 804.85 | 0.076 |
+| **cykit.ipc (Python API)** | 2,176,907 | 132.87 | 0.459 |
+| multiprocessing.Pipe | 709,357 | 43.30 | 1.410 |
+| multiprocessing.SimpleQueue | 247,966 | 15.13 | 4.033 |
+| multiprocessing.shared_memory (ring) | 237,530 | 14.50 | 4.210 |
+| multiprocessing.Queue | 178,702 | 10.91 | 5.596 |
+<!-- BENCH:IPC:END -->
+
+## [cykit.queue](https://github.com/Tapanhaz/cykit/tree/main/cykit/queue)
+
+`cykit.queue` is a in-process Lock-free message queue based on ring buffer. It supports **SPSC**, **SPMC**, **MPSC**, and **MPMC** communication patterns while preserving **broadcast (fan-out)** semantics. 
+
+### Features
+
+- Broadcast (fan-out) semantics
+- Supports SPSC, SPMC, MPSC, and MPMC
+- Blocking and non-blocking operations
+- Fixed-size message storage
+
+Detailed examples can be found here: [cykit/examples/queue](https://github.com/Tapanhaz/cykit/tree/main/examples/queue)
+
+### Performance
+
+The following benchmark measures throughput using **64-byte fixed-size messages** with **2,000,000 messages** transferred between **one producer and one consumer (SPSC push/pop)**.
+
+> **Note:** Python's standard library queues (`queue.Queue`, `queue.SimpleQueue`, and typical `collections.deque` implementations) provide **work-queue semantics**, where each message is consumed by only one consumer. `cykit.queue` provides **broadcast (fan-out)** semantics, allowing every consumer to receive every published message. To provide the closest comparable scenario, the benchmark below uses the **SPSC** configuration.
+
+![cykit.queue Benchmark](https://github.com/Tapanhaz/cykit/tree/main/benchmarks/queue/results/latest.png)
+<!-- BENCH:QUEUE:START -->
+| Implementation | Throughput | Bandwidth | Avg. Latency |
+| :------------- | ---------: | --------: | -----------: |
+| **cykit.queue (Cython API)** | 16.91 M msg/s | 1032.02 MiB/s | 0.059 μs |
+| `queue.SimpleQueue` | 11.64 M msg/s | 710.17 MiB/s | 0.086 μs |
+| **cykit.queue (Python API)** | 11.06 M msg/s | 675.29 MiB/s | 0.090 μs |
+| `collections.deque` | 0.38 M msg/s | 23.28 MiB/s | 2.622 μs |
+| `queue.Queue` | 0.32 M msg/s | 19.71 MiB/s | 3.097 μs |
+<!-- BENCH:QUEUE:END -->
+
 
 ### [cykit.utils.msgbridge (cython only)](https://github.com/Tapanhaz/cykit/tree/main/cykit/utils/msgbridge)
 
@@ -57,8 +125,8 @@ Contributions are welcome! Any kind of help — bug reports / suggestions, featu
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE-MIT) and/or
-[Apache License 2.0](LICENSE-APACHE). See the license files for details.
+This project is licensed under the [MIT License](https://github.com/Tapanhaz/cykit/blob/main/LICENSE-MIT) and/or
+[Apache License 2.0](https://github.com/Tapanhaz/cykit/blob/main/LICENSE-APACHE). See the license files for details.
 
 ### Vendored Dependencies
 
@@ -71,4 +139,4 @@ original copyright and license terms.
 - **[fmtlib](https://github.com/fmtlib/fmt)** – [MIT License](https://github.com/fmtlib/fmt/blob/master/LICENSE)
 
 All third‑party code retains its original copyright and license notices.  
-The full license texts are included in the [`NOTICE.md`](NOTICE.md) file at the root of this repository.
+The full license texts are included in the [`NOTICE.md`](https://github.com/Tapanhaz/cykit/blob/main/NOTICE.md) file at the root of this repository.

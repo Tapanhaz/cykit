@@ -1,0 +1,12 @@
+
+* text=auto eol=lf
+
+
+*.so binary
+*.pyd binary
+*.dll binary
+*.dylib binary
+*.a binary
+*.o binary
+*.obj binary
+*.lib binary

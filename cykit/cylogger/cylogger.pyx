@@ -23,7 +23,9 @@ stdlib logging interception, and network delivery.
 """
 
 import traceback
+import threading
 import logging as py_logging
+cimport cython
 from cykit.common cimport (
     PyObject,
     Py_DECREF,
@@ -145,11 +147,12 @@ cdef class LogHandler:
         self.level = level
 
 
+@cython.no_gc_clear
 cdef class UserSinkBase(LogHandler):
     def __init__(
         self,
         str            pattern,
-        LogLevel          level,
+        LogLevel       level,
         size_t         queue_capacity,
         size_t         max_msg_size,
         OverflowPolicy overflow_policy,    
@@ -162,13 +165,10 @@ cdef class UserSinkBase(LogHandler):
 
         super().__init__(False, pattern, level)
 
+        self._running.store(False, memory_order_relaxed)
         self._queue_capacity  = queue_capacity
         self._max_msg_size    = max_msg_size
         self._overflow_policy = overflow_policy
-        self._detach          = detach
-        self._running.store(True, memory_order_relaxed)
-
-        self._queue_close_delay_ms = close_timeout_ms
 
         self._queue = Queue(
             slot_size     = max_msg_size,
@@ -178,7 +178,10 @@ cdef class UserSinkBase(LogHandler):
             zerocopy      = False,
             block_on_full = block_on_full,
         )
-        
+
+        self._detach          = detach
+        self._running.store(True, memory_order_relaxed)
+        self._queue_close_delay_ms = close_timeout_ms        
 
     cdef void _start_worker(self, worker_fn_t fn) noexcept nogil:
         self._thread = make_thread(fn, <void*>self)
@@ -187,7 +190,8 @@ cdef class UserSinkBase(LogHandler):
         
     cpdef void stop(self):
         if self._running.load(memory_order_acquire):
-            self._queue.close(self._queue_close_delay_ms)
+            if self._queue is not None:
+                self._queue.close(self._queue_close_delay_ms)
 
             self._running.store(False, memory_order_seq_cst)   
             
@@ -896,7 +900,7 @@ cdef class Logger:
     def __init__(
             self, 
             str name, 
-            LogLevel level=  LogLevel.TRACE,
+            LogLevel level=  LogLevel.WARN,
             str pattern= "[%d-%m-%Y %H:%M:%S.%f] [%n] [%^%l%$] %v",
             list handlers = [],
             ColorScheme color_scheme= None,
@@ -1140,8 +1144,25 @@ cdef class Logger:
             CRITICAL_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)   
 
             Py_DECREF(holder)
+    
+    cpdef void exception(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt
+            PyObject* holder = NULL
+            const char* c_msg
+
+        full_msg = (msg % args) if args else msg
+        full_msg = f"{full_msg}\n{traceback.format_exc()}"
+        fmt = <PyObject*>full_msg
+        c_msg = _format_msg(fmt, NULL, &holder)
+
+        if c_msg != NULL:
+            ERROR_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
 
 
+
+@cython.final
 cdef class DefaultLogger:
     cpdef void trace(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
         cdef:
@@ -1214,6 +1235,156 @@ cdef class DefaultLogger:
             CRITICAL_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)      
 
             Py_DECREF(holder)
+    
+    cpdef void exception(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt
+            PyObject* holder = NULL
+            const char* c_msg
+
+        full_msg = (msg % args) if args else msg
+        full_msg = f"{full_msg}\n{traceback.format_exc()}"
+        fmt = <PyObject*>full_msg
+        c_msg = _format_msg(fmt, NULL, &holder)
+
+        if c_msg != NULL:
+            ERROR_PY(fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+
+
+@cython.final
+cdef class NamedLogger:
+
+    def __cinit__(self, str name, bint fallback_to_default=True):
+        self.name = name
+        self._fallback = fallback_to_default
+        self._gen = <uint64_t> -1  
+
+    def __repr__(self):
+        return f"<NamedLogger {self.name!r}>"
+
+    cdef void _ensure_current(self):
+        cdef uint64_t gen = registry_generation()
+        if gen != self._gen:
+            _resolve_logger_ref(self._logger, self.name, self._fallback)
+            self._gen = gen
+
+    cpdef void trace(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            TRACE_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void debug(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            DEBUG_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void info(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            INFO_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void warn(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            WARN_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void error(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            ERROR_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void critical(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt = <PyObject*>msg
+            PyObject* args_ = <PyObject*>args if args else NULL
+            PyObject* holder = NULL
+            const char* c_msg = _format_msg(fmt, args_, &holder)
+
+        self._ensure_current()
+
+        if c_msg != NULL:
+            CRITICAL_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+    cpdef void exception(self, object msg, object args= None, int fg_color= -1, int bg_color= -1, int effect= -1):
+        cdef:
+            PyObject* fmt
+            PyObject* holder = NULL
+            const char* c_msg
+
+        full_msg = (msg % args) if args else msg
+        full_msg = f"{full_msg}\n{traceback.format_exc()}"
+        fmt = <PyObject*>full_msg
+
+        self._ensure_current()
+
+        c_msg = _format_msg(fmt, NULL, &holder)
+        if c_msg != NULL:
+            ERROR_PYL(self._logger, fg_color=fg_color, bg_color=bg_color, effect=effect, msg = c_msg)
+            Py_DECREF(holder)
+
+
+
+
+cdef dict   _named_logger_cache = {}
+cdef object _named_logger_lock  = threading.Lock()
+
+
+cpdef NamedLogger get_logger(str name=""):
+    cdef NamedLogger inst = <NamedLogger>_named_logger_cache.get(name)
+    if inst is not None:
+        return inst
+
+    with _named_logger_lock:
+        inst = <NamedLogger>_named_logger_cache.get(name)
+        if inst is None:
+            inst = NamedLogger(name, True)
+            _named_logger_cache[name] = inst
+        return inst
+
+
 
 
 cdef SpdLogger get_logger_by_name(const char* name):
@@ -1226,7 +1397,7 @@ cdef SpdLogger get_logger_by_name(const char* name):
 cdef shared_ptr[logger] get_logger_ptr(str name="", bint fallback_to_default=False):
     return registry_get_logger_ptr(name, fallback_to_default)
 
-cdef void get_logger(SpdLogger &log, str name= "", bint fallback_to_default= False):
-    cdef shared_ptr[logger] logger_ptr = registry_get_logger_ptr(name.encode(), fallback_to_default)
+cdef void _resolve_logger_ref(SpdLogger &log, str name= "", bint fallback_to_default= True):
+    cdef shared_ptr[logger] logger_ptr = registry_get_logger_hierarchical(name.encode(), fallback_to_default)
     log.get_logger().swap(logger_ptr )
  

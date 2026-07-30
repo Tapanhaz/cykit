@@ -1,8 +1,8 @@
 from cykit.queue.queue cimport (
-    Queue, QueueImpl, QueueSlot, PublishEntry,
+    Queue, BridgeQueue, QueueImpl, QueueSlot, PublishEntry,
     QueueMode, SPSC, SPMC, MPSC, MPMC,
-    Q_OK, Q_ERR, Q_FULL, Q_EMPTY, Q_NO_CONSUMER, Q_PARTIAL, Q_SKIP,
-    F_CLOSING, F_ZEROCOPY, F_OVERWRITE, F_BLOCK_ON_FULL,
+    Q_OK, Q_ERR, Q_FULL, Q_EMPTY, Q_NO_CONSUMER, Q_ORPHANED, Q_CLOSING,
+    F_CLOSING, F_ZEROCOPY, F_OVERWRITE, F_BLOCK_ON_FULL, F_WAIT_CONSUMERS, F_LAG_EVICT,
     push_fn, pop_fn,
     borrow_fn, commit_fn,
     spsc_push, spmc_push, mpsc_push, mpmc_push,

@@ -19,6 +19,9 @@ cdef extern from "Python.h":
     PyObject* PyUnicode_FromString(const char*)
     PyObject* PyUnicode_Format(PyObject* format, PyObject* args) except NULL
     const char* PyUnicode_AsUTF8(PyObject* unicode) except NULL
+
+    int PyBytes_CheckExact(PyObject* o)
+    int PyUnicode_CheckExact(PyObject* o)
     
     PyObject* PyObject_CallFunctionObjArgs(PyObject*, ...)
     int Py_AddPendingCall(int (*func)(void*), void*)
@@ -114,22 +117,6 @@ cdef extern from "<condition_variable>" namespace "std" nogil:
         void wait(unique_lock[mutex]& lock) noexcept
 
 
-cdef extern from *:
-    """
-    #ifdef _WIN32
-        #include <malloc.h>
-        #define aligned_alloc_(alignment, size)  _aligned_malloc(size, alignment)
-        #define aligned_free_(ptr)               _aligned_free(ptr)
-    #else
-        #include <stdlib.h>
-        #define aligned_alloc_(alignment, size)  aligned_alloc(alignment, size)
-        #define aligned_free_(ptr)               free(ptr)
-    #endif
-    """ 
-    void* aligned_alloc_(size_t alignment, size_t size) noexcept nogil
-    void  aligned_free_(void* ptr) noexcept nogil
-
-
 cdef extern from "<thread>" namespace "std" nogil:
     cdef cppclass thread:
         thread() noexcept
@@ -137,123 +124,38 @@ cdef extern from "<thread>" namespace "std" nogil:
         void detach() noexcept
         bint joinable() noexcept
 
-
 cdef extern from *:
     """
-    #include <thread>
-    #if defined(_WIN32)
-      #include <windows.h>
-    #elif defined(__APPLE__)
-      #include <pthread.h>
-      #include <mach/thread_act.h>
-      #include <mach/thread_policy.h>
-    #elif defined(__linux__)
-      #include <pthread.h>
-      #include <sched.h>
-    #endif
-
-    static inline bool set_thread_affinity(std::thread& t, int core_id) noexcept {
-    #if defined(_WIN32)
-        DWORD_PTR mask = (DWORD_PTR)1 << core_id;
-        return SetThreadAffinityMask((HANDLE)t.native_handle(), mask) != 0;
-    #elif defined(__APPLE__)
-        thread_port_t mt = pthread_mach_thread_np(t.native_handle());
-        thread_affinity_policy_data_t policy = { core_id };
-        return thread_policy_set(mt, THREAD_AFFINITY_POLICY,
-                  (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT) == KERN_SUCCESS;
-    #elif defined(__linux__)
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(core_id, &cpuset);
-        return pthread_setaffinity_np(t.native_handle(), sizeof(cpu_set_t), &cpuset) == 0;
+    #ifdef _WIN32
+    #include <winsock2.h>
     #else
-        (void)t; (void)core_id;
-        return false;
+    #include <arpa/inet.h>
     #endif
-    }
-
-    template<typename F, typename A>
-    std::thread make_thread(F f, A a) { return std::thread(f, a); }
-
-    static inline unsigned int hw_concurrency() noexcept {
-        return std::thread::hardware_concurrency();
-    }
     """
+    uint32_t htonl(uint32_t hostlong) nogil
+    uint32_t ntohl(uint32_t netlong) nogil
+    
+
+cdef extern from "common_base.hpp" namespace "cykit" nogil:
     thread make_thread[F, A](F f, A a) noexcept nogil
 
     bint set_thread_affinity(thread& t, int core_id) noexcept nogil
     unsigned int hw_concurrency() noexcept nogil  
 
-
-cdef extern from * nogil:
-    """
-    #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-        #include <immintrin.h>
-        static __forceinline void cpu_pause(void) noexcept {
-            _mm_pause();
-        }
-    #elif defined(__i386__) || defined(__x86_64__)
-        #include <immintrin.h>
-        static __inline__ void cpu_pause(void) noexcept {
-            __builtin_ia32_pause();
-        }
-    #elif defined(_MSC_VER) && defined(_M_ARM64)
-        #include <intrin.h>
-        static __forceinline void cpu_pause(void) noexcept {
-            __yield();
-        }
-    #elif defined(__aarch64__) || defined(__arm__) || defined(__arm64__)
-        static __inline__ void cpu_pause(void) noexcept {
-            __asm__ __volatile__("yield" ::: "memory");
-        }
-    #else
-        static __inline__ void cpu_pause(void) noexcept {
-            __asm__ __volatile__("" ::: "memory");
-        }
-    #endif
-    """
     void cpu_pause() noexcept nogil
 
-
-cdef extern from *:
-    """
-    #ifdef _MSC_VER
-    #include <intrin.h>
-
-    static inline int builtin_ctzll(unsigned long long x) {
-        unsigned long index;
-        _BitScanForward64(&index, x);
-        return (int)index;
-    }
-
-    #else
-
-    static inline int builtin_ctzll(unsigned long long x) {
-        return __builtin_ctzll(x);
-    }
-
-    #endif
-    """
     int builtin_ctzll(unsigned long long x) noexcept nogil
 
-cdef extern from *:
-    """
-    #include <new>
-
-    template<typename T>
-    static inline void placement_new(void* p) noexcept {
-        new (p) T();
-    }
-
-    template<typename T>
-    static inline void placement_destroy(void* p) noexcept {
-        static_cast<T*>(p)->~T();
-    }
-    """
     void placement_new[T](void* p) noexcept nogil
     void placement_destroy[T](void* p) noexcept nogil
 
+    void* aligned_alloc_(size_t alignment, size_t size) noexcept nogil
+    void  aligned_free_(void* ptr) noexcept nogil
 
+ 
+
+
+    
 cdef inline bint is_power_of_two(uint32_t n) noexcept nogil:
     return n != 0 and (n & (n - 1)) == 0
 

@@ -8,5 +8,9 @@ extensions = [
 
 setup(
     name="cy_module",
-    ext_modules=cythonize(extensions, language_level=3),
+    ext_modules=cythonize(
+        extensions,
+        language_level=3,
+        compiler_directives=config.get_compiler_directives(),
+    ),
 )

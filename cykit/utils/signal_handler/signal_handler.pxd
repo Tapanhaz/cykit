@@ -62,10 +62,10 @@ cdef extern from *:
         return t;
     }
 
-    static int _set_interrupt(void*) {
-        PyErr_SetInterrupt();
-        return 0;
-    }
+    //static int _set_interrupt(void*) {
+    //    PyErr_SetInterrupt();
+    //    return 0;
+    //}
 
     #ifdef _WIN32
     inline BOOL _ctrl_handler_impl(DWORD dwCtrlType) {
@@ -83,7 +83,8 @@ cdef extern from *:
             if (ctx.notify_fn && ctx.context_ptr) ctx.notify_fn(ctx.context_ptr);
         }
 
-            Py_AddPendingCall(_set_interrupt, nullptr);
+            //Py_AddPendingCall(_set_interrupt, nullptr);
+            PyErr_SetInterrupt();
 
             bool expected = false;
             if (g_io_context_stopped().compare_exchange_strong(
@@ -136,7 +137,8 @@ cdef extern from *:
                         io.stop();
                     }
                 
-                Py_AddPendingCall(_set_interrupt, nullptr);
+                //Py_AddPendingCall(_set_interrupt, nullptr);
+                PyErr_SetInterrupt();
             }
         }
         
@@ -255,26 +257,49 @@ cdef extern from *:
             #endif
 
             bool expected = false;
-            if (g_io_context_stopped().compare_exchange_strong(
+//            if (g_io_context_stopped().compare_exchange_strong(
+//                    expected, true,
+//                    std::memory_order::acq_rel,
+//                    std::memory_order::acquire)) {
+//                if (g_io_context()) {
+//                    g_io_context()->stop();
+//                }
+//
+//                if (g_signal_thread().joinable()) {
+//                    g_signal_thread().join();
+//                }
+//
+//                if (g_io_context()) {
+//                    delete g_io_context();
+//                    g_io_context() = nullptr;
+//                }
+//
+//                std::lock_guard<std::mutex> lock(g_registry_mutex());
+//                g_registered_contexts().clear();
+//            }
+            g_io_context_stopped().compare_exchange_strong(
                     expected, true,
                     std::memory_order::acq_rel,
-                    std::memory_order::acquire)) {
-                if (g_io_context()) {
-                    g_io_context()->stop();
-                }
+                    std::memory_order::acquire);
+            
+            if (g_io_context()) {
+                g_io_context()->stop();
+            }
 
-                if (g_signal_thread().joinable()) {
-                    g_signal_thread().join();
-                }
+            if (g_signal_thread().joinable()) {
+                g_signal_thread().join();
+            }
 
-                if (g_io_context()) {
-                    delete g_io_context();
-                    g_io_context() = nullptr;
-                }
+            if (g_io_context()) {
+                delete g_io_context();
+                g_io_context() = nullptr;
+            }
 
+            {
                 std::lock_guard<std::mutex> lock(g_registry_mutex());
                 g_registered_contexts().clear();
             }
+
          g_io_context_stopped().store(false, std::memory_order_release);
          g_init_ok().store(false, std::memory_order_release);
          g_init_started().store(false, std::memory_order_release);

@@ -43,7 +43,7 @@ cdef extern from *:
     #endif
 
     #if defined(_WIN32)
-        static inline uint64_t now_ns(void) {
+        inline uint64_t now_ns(void) {
             static LARGE_INTEGER freq = {0};
             LARGE_INTEGER counter;
             if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
@@ -53,13 +53,13 @@ cdef extern from *:
             return sec * 1000000000ULL + (rem * 1000000000ULL) / (uint64_t)freq.QuadPart;
         }
     #elif defined(__APPLE__)
-        static inline uint64_t now_ns(void) {
+        inline uint64_t now_ns(void) {
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
             return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
         }
     #else
-        static inline uint64_t now_ns(void) {
+        inline uint64_t now_ns(void) {
             struct timespec ts;
         #ifdef CLOCK_MONOTONIC_RAW
             clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
