@@ -62,10 +62,10 @@ cdef extern from *:
         return t;
     }
 
-    static int _set_interrupt(void*) {
-        PyErr_SetInterrupt();
-        return 0;
-    }
+    //static int _set_interrupt(void*) {
+    //    PyErr_SetInterrupt();
+    //    return 0;
+    //}
 
     #ifdef _WIN32
     inline BOOL _ctrl_handler_impl(DWORD dwCtrlType) {
@@ -281,10 +281,7 @@ cdef extern from *:
                     expected, true,
                     std::memory_order::acq_rel,
                     std::memory_order::acquire);
-
-            // stop()/join()/delete must always run here once we're the last
-            // holder, regardless of whether the signal handler already
-            // flipped g_io_context_stopped and called stop() itself.
+            
             if (g_io_context()) {
                 g_io_context()->stop();
             }
