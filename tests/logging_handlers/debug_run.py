@@ -1,4 +1,6 @@
-import sys, os, subprocess
+import sys
+import os
+import subprocess
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
