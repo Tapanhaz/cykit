@@ -1,6 +1,6 @@
 from libc.stdint  cimport uint32_t, uint16_t
-from cykit.queue cimport Queue
-from cykit.common cimport thread, atomic_bool, PyObject
+from cykit.queue cimport Queue, BridgeQueue
+from cykit.common cimport atomic_bool, PyObject
 
 cdef extern from *:
     """
@@ -22,27 +22,34 @@ cdef extern from *:
         #define INVALID_SOCKET -1
     #endif
 
+    #include <atomic>
+
     struct NotifyBridge {
         PLATFORM_SOCKET sock;
         struct sockaddr_in addr;
+        std::atomic<unsigned char> waiting;   
     };
 
-    static inline void sig_notify(struct NotifyBridge* b) {
+    inline void sig_notify(struct NotifyBridge* b) {
         if (b && b->sock != (PLATFORM_SOCKET)INVALID_SOCKET) {
-            char signal = 1;
+            unsigned char expected = 1;
+            if (b->waiting.compare_exchange_strong(
+                    expected, 0, std::memory_order_acq_rel)) {
+                char signal = 1;
 
-            sendto(
-                b->sock,
-                &signal,
-                1,
-                0,
-                (struct sockaddr*)&b->addr,
-                sizeof(b->addr)
-            );
+                sendto(
+                    b->sock,
+                    &signal,
+                    1,
+                    0,
+                    (struct sockaddr*)&b->addr,
+                    sizeof(b->addr)
+                );
+            }
         }
     }
 
-    static inline int sig_wait(struct NotifyBridge* b) {
+    inline int sig_wait(struct NotifyBridge* b) {
         char buf;
 
         return recvfrom(
@@ -53,6 +60,14 @@ cdef extern from *:
             NULL,
             NULL
         );
+    }
+
+    inline void sig_wait_begin(struct NotifyBridge* b) {
+        b->waiting.store(1, std::memory_order_release);
+    }
+
+    inline void sig_wait_end(struct NotifyBridge* b) {
+        b->waiting.store(0, std::memory_order_release);
     }
     """
 
@@ -83,6 +98,8 @@ cdef extern from *:
 
     cdef void sig_notify(NotifyBridge* b) noexcept nogil
     cdef int sig_wait(NotifyBridge* b) noexcept nogil
+    cdef void sig_wait_begin(NotifyBridge* b) noexcept nogil
+    cdef void sig_wait_end(NotifyBridge* b) noexcept nogil
 
 
 
@@ -120,9 +137,10 @@ cdef class AsyncDispatcher:
     cdef inline int __try_push_var(self, const char* data, size_t size) noexcept nogil
 
 
+
 cdef class SyncDispatcher:
     cdef:
-        Queue _q 
+        BridgeQueue _q 
         NotifyBridge _bridge
 
         bint _detach
@@ -134,7 +152,8 @@ cdef class SyncDispatcher:
         object            _sock  
         bint            _nonblocking      
         atomic_bool _running
-        thread          _thread
+        object     _thread
+        
 
     cpdef void setup(self, str host=?, int recvbuf=?)
 
@@ -144,11 +163,11 @@ cdef class SyncDispatcher:
     cdef inline int __push(self, const char* data, size_t size) noexcept nogil
     cdef inline int __push_var(self, const char* data, size_t size) noexcept nogil
     
-    cdef void __try_pop(self) noexcept nogil
-    cdef void __try_pop_var(self) noexcept nogil
+    cdef void __try_pop(self)
+    cdef void __try_pop_var(self)
     
-    cdef void __pop(self) noexcept nogil
-    cdef void __pop_var(self) noexcept nogil
+    cdef void __pop(self)
+    cdef void __pop_var(self)
     
     cpdef void close(self)
 
@@ -203,7 +222,7 @@ ctypedef int (*cb_load_fn_t)(CBufferView, object) except -1
 
 cdef int buf_to_cbuf(object msg, Py_buffer* view, const char** data, size_t* size) except -1
 cdef int str_to_cbuf(object msg, const char** data, size_t* size) except -1
-cdef int obj_to_cbuf(object msg, PyObject** pb, const char** data, size_t* size) except -1
+cdef int obj_to_cbuf(object encoder, object msg, PyObject** pb, const char** data, size_t* size) except -1
 cdef int bytes_to_cbuf(object msg, const char** data, size_t* size) except -1
 
 
@@ -216,6 +235,7 @@ cdef class CBufferView:
         PyObject*   _pb
 
         cb_load_fn_t   _load
+        object  _msgpack_encoder
     
     cdef inline int load(self, object msg) except -1
     cdef inline int _load_bytes(self, object msg) except -1
@@ -228,15 +248,15 @@ cdef class CBufferView:
 
 ## Only for testing purpose ::
 
-cdef class AsyncQueue:
-    cdef:
-        Queue _q
-
-        object _loop
-        object _callback 
-        object _lock
-        object _notify_cond 
-        object _task
-        bint   _running
-    
-    cpdef start_dispatcher(self, object callback)
+#cdef class AsyncQueue:
+#    cdef:
+#        Queue _q
+#
+#        object _loop
+#        object _callback 
+#        object _lock
+#        object _notify_cond 
+#        object _task
+#        bint   _running
+#    
+#    cpdef start_dispatcher(self, object callback)
