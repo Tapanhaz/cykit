@@ -615,7 +615,7 @@ class LoggerRegistry {
 
 class LoggerFactory {
     public:
-        LoggerFactory() : g_level_(spdlog::level::trace) {}
+        LoggerFactory() : g_level_(spdlog::level::warn) {}
 
         LoggerFactory& set_level(spdlog::level::level_enum level) {
             g_level_ = static_cast<spdlog::level::level_enum>(level);

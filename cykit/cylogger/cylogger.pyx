@@ -900,7 +900,7 @@ cdef class Logger:
     def __init__(
             self, 
             str name, 
-            LogLevel level=  LogLevel.TRACE,
+            LogLevel level=  LogLevel.WARN,
             str pattern= "[%d-%m-%Y %H:%M:%S.%f] [%n] [%^%l%$] %v",
             list handlers = [],
             ColorScheme color_scheme= None,
