@@ -1,13 +1,14 @@
-import os
-import re
-import sys
-import json
-import time
-import signal
+#!
+
 import hashlib
-import threading
+import json
+import os
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
+
 import _bench_ipc_loader
 
 HERE = Path(__file__).resolve().parent
@@ -134,12 +135,12 @@ def run_ipc_pair(
             try:
                 if r.proc.poll() is None:
                     r.proc.kill()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
         for r in all_readers:
             try:
                 r.proc.wait(timeout=5)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
     try:

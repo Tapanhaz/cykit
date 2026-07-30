@@ -1,5 +1,6 @@
-import sys
 import json
+import sys
+
 from run_ipc_bench import run_ipc_pair
 
 if __name__ == "__main__":

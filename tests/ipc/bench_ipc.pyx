@@ -23,14 +23,14 @@ from libc.stdio cimport printf, fflush, stdout
 
 from cykit.common cimport (
     cpu_pause,
-    memory_order_acquire,
+    memory_order,
 )
 
 from cykit.ipc cimport (
     Context, SharedMemSystem, 
     RunningMode, ProcessRole,
-    IPC_OK, IPC_EMPTY, IPC_FULL, IPC_ERR, IPC_CLOSING,
-    F_IPC_CLOSING, F_IPC_BLOCK_ON_FULL, F_IPC_WAIT_CONSUMERS, 
+    IPC_OK, IPC_EMPTY, IPC_FULL, IPC_ERR, IPC_CLOSING, IPC_NO_CONSUMER,
+    F_IPC_CLOSING, F_IPC_BLOCK_ON_FULL, F_IPC_WAIT_CONSUMERS, F_IPC_ABORT,
     
     init_producer_system,
     init_consumer_system,
@@ -284,7 +284,7 @@ cdef void _producer_bench(
                 start = now_ns()
             pushed += 1
             total_bytes += cur_sz
-        elif rc == IPC_FULL:
+        elif rc == IPC_FULL or rc == IPC_NO_CONSUMER:
             cpu_pause()
         elif rc == IPC_CLOSING:
             break
@@ -495,7 +495,7 @@ cdef void _consumer_bench(
                         corrupt_count += 1
         elif rc == IPC_EMPTY:
             if (pair == PAIR_TRY_PUSH_POP or pair == PAIR_TRY_PUSH_VAR_POP_VAR) and \
-               (ctx.sd.shared_flags.load(memory_order_acquire) & F_IPC_CLOSING):
+               (ctx.sd.shared_flags.load(memory_order.memory_order_relaxed) & F_IPC_ABORT):
                 break
             cpu_pause()
 

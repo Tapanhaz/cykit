@@ -1,5 +1,6 @@
-import sys
 import json
+import sys
+
 import _bench_ipc_loader
 from bench_ipc import run_producer
 

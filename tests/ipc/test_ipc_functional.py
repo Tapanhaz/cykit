@@ -1,16 +1,15 @@
-import os
+#!
+
 import sys
-import json
-import signal
-import pytest
-import subprocess
 from pathlib import Path
+
+import pytest
 from run_ipc_bench import (
     FIXED_PAYLOAD,
-    VAR_PAYLOAD,
+    MODE_COUNTS,
     MODE_NAME,
     PAIR_NAME,
-    MODE_COUNTS,
+    VAR_PAYLOAD,
     run_ipc_pair,
 )
 
