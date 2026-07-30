@@ -41,6 +41,7 @@ class BuildExt(build_ext):
         config._openssl_cache.clear()
         for ext in self.extensions:
             if "cylogger" not in ext.name:
+                # if ext.name not in ("cylogger", "queue", "msgbridge", "ipc"):
                 continue
 
             for d in config._get_openssl_include_dirs():
@@ -366,7 +367,8 @@ class BuildExt(build_ext):
 
 
 base_ext_kwargs = config.get_base_ext_kwargs()
-cylogger_ext_kwargs = config.get_extension_kwargs()
+cylogger_ext_kwargs = config.get_extension_kwargs(ssl=True)
+
 
 extensions = [
     Extension(
@@ -379,11 +381,11 @@ extensions = [
         sources=["cykit/queue/queue.pyx"],
         **base_ext_kwargs,
     ),
-    # Extension(
-    #    "cykit.ipc.ipc",
-    #    sources=["cykit/ipc/ipc.pyx"],
-    #    **base_ext_kwargs,
-    # ),
+    Extension(
+        "cykit.ipc.ipc",
+        sources=["cykit/ipc/ipc.pyx"],
+        **base_ext_kwargs,
+    ),
     Extension(
         "cykit.utils.msgbridge.msgbridge",
         sources=["cykit/utils/msgbridge/msgbridge.pyx"],
@@ -405,6 +407,10 @@ setup(
             "cmake.*",
             "tests",
             "tests.*",
+            "bench",
+            "bench.*",
+            "benchmarks",
+            "benchmarks.*",
         ]
     ),
     ext_modules=cythonize(
