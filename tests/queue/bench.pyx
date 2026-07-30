@@ -35,7 +35,7 @@ from cykit.common cimport (
 
 from cykit.queue cimport (
     Queue, QueueImpl, QueueMode, spsc_push, spsc_pop,
-    Q_OK, Q_EMPTY, Q_FULL, Q_ERR, Q_PARTIAL, Q_SKIP, Q_NO_CONSUMER,
+    Q_OK, Q_EMPTY, Q_FULL, Q_ERR, Q_NO_CONSUMER,
     F_CLOSING, queue_close
 )
 
@@ -378,7 +378,7 @@ cpdef run_queue_bench(
         QueueMode qmode = <QueueMode>mode
         BenchPair p     = <BenchPair>pair
         bint is_var     = (p == PAIR_PUSH_VAR_POP_VAR or p == PAIR_TRY_PUSH_VAR_POP_VAR)
-        bint needs_reg  = (qmode == QueueMode.SPMC or qmode == QueueMode.MPMC)
+        bint needs_reg  = (qmode != QueueMode.SPSC)
         bint needs_prod_register = qmode != QueueMode.SPSC
         uint32_t min_sz = <uint32_t>slot_size
         uint32_t max_sz

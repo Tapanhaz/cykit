@@ -1,9 +1,14 @@
+import pathlib  # noqa: EXE002
 import sys
-import pathlib
+
 import pyximport
-from setuptools import Extension
+from Cython.Compiler import Options
 from Cython.Distutils import build_ext
+from setuptools import Extension
+
 from cykit._build.config import config
+
+Options.get_directive_defaults()["freethreading_compatible"] = True
 
 TESTS_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS_DIR))
