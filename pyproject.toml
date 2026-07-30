@@ -22,7 +22,11 @@ authors = [
 ]
 
 requires-python = ">=3.9"
-dependencies = [ "certifi>=2026.2.25", "msgspec>=0.21.1" ] 
+dependencies = [
+  "certifi>=2026.2.25",
+  "msgspec>=0.21.1; python_version >= '3.10'",
+  "msgspec>=0.20.0,<0.21.1; python_version < '3.10'",
+]
 
 classifiers = [
   "Development Status :: 3 - Alpha",
