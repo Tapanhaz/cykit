@@ -50,7 +50,7 @@ from cykit.utils.signal_handler cimport (
     unregister_context_notify,
     cleanup_signal_handler,
 )
-from libc.stdio cimport printf
+#from libc.stdio cimport printf
 
 cdef extern from * nogil:
     """
@@ -101,7 +101,7 @@ static inline uint32_t _tls_get_pid()             noexcept { return _tls_ps.pid;
 
 cdef void queue_notify(void* ctx) noexcept nogil:
     cdef QueueImpl* q = <QueueImpl*>ctx
-    printf(b"Shutting Down .. please wait")
+    #printf(b"Shutting Down .. please wait\n")
     q.running.store(0, memory_order_release)
     q.tail.fetch_add(1, memory_order_relaxed)
     q.head.fetch_add(1, memory_order_relaxed)
@@ -111,7 +111,7 @@ cdef void queue_notify(void* ctx) noexcept nogil:
 
 cdef void py_queue_notify(void* ctx) noexcept nogil:
     cdef PyQueueImpl* q = <PyQueueImpl*>ctx
-    printf(b"Shutting Down .. please wait")
+    #printf(b"Shutting Down .. please wait\n")
     q.running.store(0, memory_order_release)
     q.tail.fetch_add(1, memory_order_relaxed)
     q.head.fetch_add(1, memory_order_relaxed)
@@ -185,34 +185,119 @@ cdef inline bint _all_readers_at(
 cdef inline uint64_t consumer_min_pos(QueueImpl* q) noexcept nogil:
     cdef:
         uint64_t mask = q.reader_active_mask.value.load(memory_order_acquire)
-        uint64_t min_pos = q.tail.load(memory_order_acquire)
+        uint64_t tail = q.tail.load(memory_order_acquire)
         uint64_t pos
         int i
+        cbool lag_evict = (q.flags.load(memory_order_relaxed) & F_LAG_EVICT) != 0
+
+    if not lag_evict:
+        while mask:
+            i = builtin_ctzll(mask)
+            pos = q.reader_pos[i].value.load(memory_order_acquire)
+            if pos < tail:
+                tail = pos
+            mask &= mask - 1
+        return tail
+    
+    cdef:        
+        uint64_t min1 = tail
+        uint64_t min2 = 0xFFFFFFFFFFFFFFFFULL
+        uint64_t min1_bit = 0
+        uint64_t min1_idx = 0
+        uint64_t bit, cur, flagged
+        uint64_t threshold = (q.capacity_mask + 1) // LAG_EVICT_DIVISOR
 
     while mask:
         i = builtin_ctzll(mask)
+        bit = (<uint64_t>1) << i
         pos = q.reader_pos[i].value.load(memory_order_acquire)
-        if pos < min_pos:
-            min_pos = pos
+        if pos < min1:
+            min2 = min1
+            min1 = pos
+            min1_bit = bit
+            min1_idx = i
+        elif pos < min2:
+            min2 = pos
         mask &= mask - 1
-    return min_pos
+
+    if min1_bit == 0 or min2 == 0xFFFFFFFFFFFFFFFFULL or (min2 - min1) < threshold:
+        return min1
+
+    flagged = q.consumer_ctx[min1_idx].value.lag_flag_pos.load(memory_order_relaxed)
+
+    if flagged != min1:
+        q.consumer_ctx[min1_idx].value.lag_flag_pos.store(min1, memory_order_relaxed)
+        return min1
+
+    if (min2 - min1) < 2 * threshold:
+        return min1
+
+    cur = q.reader_active_mask.value.load(memory_order_acquire)
+    while True:
+        if _cas_u64(&q.reader_active_mask.value, &cur, cur & ~min1_bit):
+            atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
+            break
+        cpu_pause()
+    return min2
 
 
 cdef inline uint64_t consumer_min_pos_py(PyQueueImpl* q) noexcept nogil:
     cdef:
         uint64_t mask = q.reader_active_mask.value.load(memory_order_acquire)
-        uint64_t min_pos = q.tail.load(memory_order_acquire)
+        uint64_t tail = q.tail.load(memory_order_acquire)
         uint64_t pos
         int i
+        cbool lag_evict = (q.flags.load(memory_order_relaxed) & F_LAG_EVICT) != 0
+
+    if not lag_evict:
+        while mask:
+            i = builtin_ctzll(mask)
+            pos = q.reader_pos[i].value.load(memory_order_acquire)
+            if pos < tail:
+                tail = pos
+            mask &= mask - 1
+        return tail
+    
+    cdef:        
+        uint64_t min1 = tail
+        uint64_t min2 = 0xFFFFFFFFFFFFFFFFULL
+        uint64_t min1_bit = 0
+        uint64_t min1_idx = 0
+        uint64_t bit, cur, flagged
+        uint64_t threshold = (q.capacity_mask + 1) // LAG_EVICT_DIVISOR
 
     while mask:
         i = builtin_ctzll(mask)
+        bit = (<uint64_t>1) << i
         pos = q.reader_pos[i].value.load(memory_order_acquire)
-        if pos < min_pos:
-            min_pos = pos
+        if pos < min1:
+            min2 = min1
+            min1 = pos
+            min1_bit = bit
+            min1_idx = i
+        elif pos < min2:
+            min2 = pos
         mask &= mask - 1
-    return min_pos
 
+    if min1_bit == 0 or min2 == 0xFFFFFFFFFFFFFFFFULL or (min2 - min1) < threshold:
+        return min1
+
+    flagged = q.lag_flag_pos[min1_idx].value.load(memory_order_relaxed)
+
+    if flagged != min1:
+        q.lag_flag_pos[min1_idx].value.store(min1, memory_order_relaxed)
+        return min1
+
+    if (min2 - min1) < 2 * threshold:
+        return min1
+
+    cur = q.reader_active_mask.value.load(memory_order_acquire)
+    while True:
+        if _cas_u64(&q.reader_active_mask.value, &cur, cur & ~min1_bit):
+            atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
+            break
+        cpu_pause()
+    return min2
 
 cdef inline void consumer_update_min(QueueImpl* q) noexcept nogil:
     cdef:
@@ -433,17 +518,20 @@ cdef int register_producer(void* ctx, uint32_t* out_id) noexcept nogil:
         QueueImpl* q = <QueueImpl*>ctx
         uint64_t mask, bit
         uint32_t i
+        int ret= Q_OK
 
     while True:
         mask = q.producer_active_mask.value.load(memory_order_acquire)
         if mask == 0xFFFFFFFFFFFFFFFFULL:
-            return Q_ERR
+            ret=  Q_ERR
+            break
         i   = builtin_ctzll(~mask)
         bit = (<uint64_t>1) << i
         if _cas_u64(&q.producer_active_mask.value, &mask, mask | bit):
             out_id[0] = i
             _tls_set_pid(i)
-            return Q_OK
+            break
+    return ret
 
 cdef void unregister_producer(void* ctx, uint32_t pid) noexcept nogil:
     cdef:
@@ -461,17 +549,20 @@ cdef int py_register_producer(void* ctx, uint32_t* out_id) noexcept nogil:
         PyQueueImpl* q = <PyQueueImpl*>ctx
         uint64_t mask, bit
         uint32_t i
+        int ret = Q_OK
 
     while True:
         mask = q.producer_active_mask.value.load(memory_order_acquire)
         if mask == 0xFFFFFFFFFFFFFFFFULL:
-            return Q_ERR
+            ret= Q_ERR
+            break
         i   = builtin_ctzll(~mask)
         bit = (<uint64_t>1) << i
         if _cas_u64(&q.producer_active_mask.value, &mask, mask | bit):
             out_id[0] = i
             _tls_set_pid(i)
-            return Q_OK
+            break
+    return ret
 
 cdef void py_unregister_producer(void* ctx, uint32_t pid) noexcept nogil:
     cdef:
@@ -493,11 +584,13 @@ cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
         uint64_t mask, bit
         uint32_t i
         char* sbuf
+        int ret = Q_OK
 
     while True:
         mask = q.reader_active_mask.value.load(memory_order_acquire)
         if mask == 0xFFFFFFFFFFFFFFFFULL:
-            return Q_ERR
+            ret= Q_ERR
+            break
         i    = builtin_ctzll(~mask)
         bit  = (<uint64_t>1) << i
         if _cas_u64(&q.reader_active_mask.value, &mask, mask | bit):
@@ -509,7 +602,8 @@ cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
                         if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~bit):
                             break
                         cpu_pause()
-                    return Q_ERR
+                    ret= Q_ERR
+                    break
                 q.consumer_ctx[i].value.scratch_buf = sbuf
                 q.consumer_ctx[i].value.scratch_cap = q.slot_size
 
@@ -525,24 +619,29 @@ cdef int register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
 
             q.consumer_ctx[i].value.discard_count = 0
             q.consumer_ctx[i].value.resync_count = 0
+            q.consumer_ctx[i].value.lag_flag_pos.store(0xFFFFFFFFFFFFFFFFULL, memory_order_relaxed)
 
             out_id[0] = i
             _tls_set_rid(i)
             consumer_update_min(q)
             atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
             atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
-            return Q_OK
+            break
+    return ret
+
 
 cdef int py_register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
     cdef:
         PyQueueImpl* q = <PyQueueImpl*>ctx
         uint64_t mask, bit
         uint32_t i
+        int ret = Q_OK
 
     while True:
         mask = q.reader_active_mask.value.load(memory_order_acquire)
         if mask == 0xFFFFFFFFFFFFFFFFULL:
-            return Q_ERR
+            ret= Q_ERR
+            break
         i   = builtin_ctzll(~mask)
         bit = (<uint64_t>1) << i
         if _cas_u64(&q.reader_active_mask.value, &mask, mask | bit):
@@ -554,7 +653,8 @@ cdef int py_register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
             consumer_update_min_py(q)
             atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
             atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
-            return Q_OK
+            break
+    return ret
 
 
 
@@ -580,7 +680,8 @@ cdef void unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
         if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~bit):
             _tls_set_rid(0XFFFFFFFF)
             consumer_update_min(q)
-            atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)            
+            atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+            atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)            
             return
 
 cdef void py_unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
@@ -594,7 +695,82 @@ cdef void py_unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
             _tls_set_rid(0xFFFFFFFFu)
             consumer_update_min_py(q)
             atomic_notify_all(&q.reader_min_pos, &q.reader_min_pos_wm)
+            atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
             return
+
+cdef int mpsc_register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        uint64_t mask, tail
+
+    while True:
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
+        if mask & 1:
+            return Q_ERR 
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask | 1):
+            break
+        cpu_pause()
+
+    tail = q.tail.load(memory_order_acquire)
+    q.head.store(tail, memory_order_release)
+
+    out_id[0] = 0
+    _tls_set_rid(0)
+    atomic_notify_all(&q.head, &q.head_wm)
+    atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
+    return Q_OK
+
+
+cdef int py_mpsc_register_consumer(void* ctx, uint32_t* out_id) noexcept nogil:
+    cdef:
+        PyQueueImpl* q = <PyQueueImpl*>ctx
+        uint64_t mask, tail
+
+    while True:
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
+        if mask & 1:
+            return Q_ERR 
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask | 1):
+            break
+        cpu_pause()
+
+    tail = q.tail.load(memory_order_acquire)
+    q.head.store(tail, memory_order_release)
+
+    out_id[0] = 0
+    _tls_set_rid(0)
+    atomic_notify_all(&q.head, &q.head_wm)
+    atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
+    return Q_OK
+
+
+cdef void mpsc_unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        uint64_t mask
+
+    while True:
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~<uint64_t>1):
+            break
+        cpu_pause()
+
+    _tls_set_rid(0xFFFFFFFFu)
+    atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
+
+cdef void py_mpsc_unregister_consumer(void* ctx, uint32_t reader_id) noexcept nogil:
+    cdef:
+        PyQueueImpl* q = <PyQueueImpl*>ctx
+        uint64_t mask
+
+    while True:
+        mask = q.reader_active_mask.value.load(memory_order_acquire)
+        if _cas_u64(&q.reader_active_mask.value, &mask, mask & ~<uint64_t>1):
+            break
+        cpu_pause()
+
+    _tls_set_rid(0xFFFFFFFFu)
+    atomic_notify_all(&q.reader_active_mask.value, &q.reader_active_mask_wm)
 
 # =========================================================================
 # ===============================   SPSC   ================================
@@ -609,7 +785,7 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
         head = q.head.load(memory_order_acquire)
@@ -623,12 +799,12 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
                 continue
             elif q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
 
                 atomic_notify_one(&q.tail, &q.tail_wm)
                 atomic_wait(&q.head, head, &q.head_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -651,7 +827,7 @@ cdef int spsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         atomic_notify_one(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef inline int spsc_py_push(void* ctx, object data) except -1:
@@ -661,7 +837,7 @@ cdef inline int spsc_py_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
         head = q.head.load(memory_order_acquire)
@@ -680,14 +856,14 @@ cdef inline int spsc_py_push(void* ctx, object data) except -1:
                 continue
             elif q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
 
                 atomic_notify_one(&q.tail, &q.tail_wm)
                 
                 with nogil:
                     atomic_wait(&q.head, head, &q.head_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -704,7 +880,7 @@ cdef inline int spsc_py_push(void* ctx, object data) except -1:
         atomic_notify_one(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int spsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
@@ -714,7 +890,7 @@ cdef int spsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_acquire)
     tail = q.tail.load(memory_order_relaxed)
@@ -756,7 +932,7 @@ cdef int spsc_py_try_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_acquire)
     tail = q.tail.load(memory_order_relaxed)
@@ -801,7 +977,7 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint32_t seq_id
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
     
@@ -825,12 +1001,12 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
                     continue
                 elif q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                     if not q.running.load(memory_order_acquire):
-                        return Q_ERR
+                        return Q_CLOSING
                         
                     atomic_notify_one(&q.tail, &q.tail_wm)
                     atomic_wait(&q.head, head, &q.head_wm)
                     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                        return Q_ERR
+                        return Q_CLOSING
                     continue
                 else:
                     return Q_FULL
@@ -856,7 +1032,7 @@ cdef int spsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             break
 
         if not q.running.load(memory_order_acquire):
-            return Q_ERR
+            return Q_CLOSING
 
     return Q_OK
 
@@ -872,7 +1048,7 @@ cdef int spsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint32_t seq_id
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
     
@@ -937,10 +1113,10 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx  = head & q.capacity_mask
@@ -957,7 +1133,7 @@ cdef int spsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         atomic_notify_one(&q.head, &q.head_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef inline int spsc_py_pop(void* ctx, PyObject** out) except -1:
@@ -972,11 +1148,11 @@ cdef inline int spsc_py_pop(void* ctx, PyObject** out) except -1:
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             with nogil:
                 atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx  = head & q.capacity_mask
@@ -991,7 +1167,44 @@ cdef inline int spsc_py_pop(void* ctx, PyObject** out) except -1:
         atomic_notify_one(&q.head, &q.head_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
+
+
+cdef int spsc_pop_py_dispatch(void* ctx, char** out_buf, size_t* out_size):
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
+        uint64_t head, tail, idx
+        QueueSlot* slot
+
+    while q.running.load(memory_order_acquire):
+        head = q.head.load(memory_order_relaxed)
+        tail = q.tail.load(memory_order_acquire)
+
+        if head == tail:
+            if not q.running.load(memory_order_acquire):
+                return Q_CLOSING
+            with nogil:
+                atomic_wait(&q.tail, tail, &q.tail_wm)
+            if not q.running.load(memory_order_acquire):
+                return Q_CLOSING
+            continue
+
+        idx  = head & q.capacity_mask
+        slot = &q.slots[idx]
+
+        atomic_thread_fence(memory_order_acquire)
+
+        _stage_slot(st, slot.buf, slot.size)
+
+        out_buf[0]  = st.scratch_buf
+        out_size[0] = slot.size
+
+        q.head.store(head + 1, memory_order_release)
+        atomic_notify_one(&q.head, &q.head_wm)
+        return Q_OK
+
+    return Q_CLOSING
 
 
 cdef int spsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
@@ -1002,7 +1215,7 @@ cdef int spsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_relaxed)
     tail = q.tail.load(memory_order_acquire)
@@ -1036,7 +1249,7 @@ cdef int spsc_py_try_pop(void* ctx, PyObject** out) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_relaxed)
     tail = q.tail.load(memory_order_acquire)
@@ -1058,6 +1271,41 @@ cdef int spsc_py_try_pop(void* ctx, PyObject** out) except -1:
     return Q_OK
 
 
+cdef int spsc_try_pop_py_dispatch(void* ctx, char** out_buf, size_t* out_size):
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
+        uint64_t head, tail, idx
+        QueueSlot* slot
+
+    if not q.running.load(memory_order_acquire):
+        return Q_CLOSING
+
+    head = q.head.load(memory_order_relaxed)
+    tail = q.tail.load(memory_order_acquire)
+
+    if head == tail:
+        return Q_EMPTY
+
+    idx  = head & q.capacity_mask
+    slot = &q.slots[idx]
+
+    out_buf[0]  = slot.buf
+    out_size[0] = slot.size
+
+    atomic_thread_fence(memory_order_acquire)
+
+    _stage_slot(st, slot.buf, slot.size)
+
+    out_buf[0]  = st.scratch_buf
+    out_size[0] = slot.size
+
+    q.head.store(head + 1, memory_order_release)
+    
+    atomic_notify_one(&q.head, &q.head_wm)
+    return Q_OK
+
+
 cdef int spsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
     cdef:
         QueueImpl* q = <QueueImpl*>ctx
@@ -1070,11 +1318,11 @@ cdef int spsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
                 
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx  = head & q.capacity_mask
@@ -1085,7 +1333,7 @@ cdef int spsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         out_size[0] = slot.size
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef void spsc_pop_commit(void* ctx) noexcept nogil:
@@ -1115,7 +1363,7 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if head == tail:
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx  = head & q.capacity_mask
@@ -1137,7 +1385,7 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -1159,7 +1407,72 @@ cdef int spsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
             st.expected_chunk = 0
             return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
+
+
+cdef int spsc_pop_var_py_dispatch(void* ctx, char** out_buf, size_t* out_size):
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
+        uint64_t head, tail, idx
+        QueueSlot* slot
+        size_t needed
+        char* tmp
+        uint16_t total_chunks
+
+    while q.running.load(memory_order_acquire):
+        head = q.head.load(memory_order_relaxed)
+        tail = q.tail.load(memory_order_acquire)
+
+        if head == tail:
+            with nogil:
+                atomic_wait(&q.tail, tail, &q.tail_wm)
+            if not q.running.load(memory_order_acquire):
+                return Q_CLOSING
+            continue
+
+        idx  = head & q.capacity_mask
+        slot = &q.slots[idx]
+
+        atomic_thread_fence(memory_order_acquire)
+
+        if slot.seq_id != st.expected_seq or slot.chunk_idx != st.expected_chunk:
+            if slot.chunk_idx == 0:
+                st.expected_seq   = slot.seq_id
+                st.expected_chunk = 0
+                st.assemble_used  = 0
+            else:
+                q.head.store(head + 1, memory_order_release)
+                atomic_notify_one(&q.head, &q.head_wm)
+                continue
+
+        needed = st.assemble_used + slot.size
+        if needed > st.assemble_cap:
+            tmp = <char*>realloc(st.assemble_buf, needed * 2)
+            if tmp == NULL:
+                return Q_CLOSING
+            st.assemble_buf = tmp
+            st.assemble_cap = needed * 2
+
+        memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
+        st.assemble_used += slot.size
+
+        total_chunks = slot.total_chunks
+
+        q.head.store(head + 1, memory_order_release)
+        atomic_notify_one(&q.head, &q.head_wm)
+
+        st.expected_chunk += 1
+
+        if st.expected_chunk == total_chunks:
+            out_buf[0]       = st.assemble_buf
+            out_size[0]      = st.assemble_used
+            st.assemble_used  = 0
+            st.expected_seq  += 1
+            st.expected_chunk = 0
+            return Q_OK
+
+    return Q_CLOSING
 
 
 cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
@@ -1173,11 +1486,12 @@ cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         uint16_t total_chunks
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
-    while True:
-        if not q.running.load(memory_order_acquire):
-            return Q_ERR
+    #while True:
+    #    if not q.running.load(memory_order_acquire):
+    #        return Q_CLOSING
+    while q.running.load(memory_order_acquire):
 
         head = q.head.load(memory_order_relaxed)
         tail = q.tail.load(memory_order_acquire)
@@ -1199,14 +1513,14 @@ cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
                 q.head.store(head + 1, memory_order_release)
                 atomic_notify_one(&q.head, &q.head_wm)
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
 
         needed = st.assemble_used + slot.size
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -1227,6 +1541,76 @@ cdef int spsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
             st.expected_seq  += 1
             st.expected_chunk = 0
             return Q_OK
+    return Q_CLOSING
+
+
+cdef int spsc_try_pop_var_py_dispatch(void* ctx, char** out_buf, size_t* out_size):
+    cdef:
+        QueueImpl* q = <QueueImpl*>ctx
+        ConsumerCtx* st = &q.consumer_ctx[0].value
+        uint64_t head, tail, idx
+        QueueSlot* slot
+        size_t needed
+        char* tmp
+        uint16_t total_chunks
+
+    if not q.running.load(memory_order_acquire):
+        return Q_CLOSING
+
+    #while True:
+    #    if not q.running.load(memory_order_acquire):
+    #        return Q_CLOSING
+    while q.running.load(memory_order_acquire):
+
+        head = q.head.load(memory_order_relaxed)
+        tail = q.tail.load(memory_order_acquire)
+
+        if head == tail:
+            return Q_EMPTY
+
+        idx  = head & q.capacity_mask
+        slot = &q.slots[idx]
+
+        atomic_thread_fence(memory_order_acquire)
+
+        if slot.seq_id != st.expected_seq or slot.chunk_idx != st.expected_chunk:
+            if slot.chunk_idx == 0:
+                st.expected_seq   = slot.seq_id
+                st.expected_chunk = 0
+                st.assemble_used  = 0
+            else:
+                q.head.store(head + 1, memory_order_release)
+                atomic_notify_one(&q.head, &q.head_wm)
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING
+                continue
+
+        needed = st.assemble_used + slot.size
+        if needed > st.assemble_cap:
+            tmp = <char*>realloc(st.assemble_buf, needed * 2)
+            if tmp == NULL:
+                return Q_CLOSING
+            st.assemble_buf = tmp
+            st.assemble_cap = needed * 2
+
+        memcpy(st.assemble_buf + st.assemble_used, slot.buf, slot.size)
+        st.assemble_used += slot.size
+
+        total_chunks = slot.total_chunks
+
+        q.head.store(head + 1, memory_order_release)
+        atomic_notify_one(&q.head, &q.head_wm)
+
+        st.expected_chunk += 1
+
+        if st.expected_chunk == total_chunks:
+            out_buf[0]       = st.assemble_buf
+            out_size[0]      = st.assemble_used
+            st.assemble_used  = 0
+            st.expected_seq  += 1
+            st.expected_chunk = 0
+            return Q_OK
+    return Q_CLOSING
 
 
 # =========================================================================
@@ -1242,23 +1626,34 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
 
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING
+                atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                    return Q_CLOSING
+                continue
+            else:
+                return Q_NO_CONSUMER
+
         head = q.head.load(memory_order_acquire)
         tail = q.tail.load(memory_order_relaxed)
 
         if tail - head >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 atomic_wait(&q.head, head, &q.head_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -1283,7 +1678,7 @@ cdef int mpsc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int mpsc_py_push(void* ctx, object data) except -1:
     cdef:
@@ -1292,24 +1687,36 @@ cdef int mpsc_py_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
 
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING                
+                with nogil:
+                    atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                    return Q_CLOSING
+                continue
+            else:
+                return Q_NO_CONSUMER
+
         head = q.head.load(memory_order_acquire)
         tail = q.tail.load(memory_order_relaxed)
 
         if tail - head >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 with nogil:
                     atomic_wait(&q.head, head, &q.head_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -1329,7 +1736,7 @@ cdef int mpsc_py_push(void* ctx, object data) except -1:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int mpsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
     cdef:
@@ -1338,10 +1745,13 @@ cdef int mpsc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
 
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+    
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     tail = q.tail.load(memory_order_relaxed)
 
@@ -1376,10 +1786,13 @@ cdef int mpsc_py_try_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+    
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     tail = q.tail.load(memory_order_relaxed)
 
@@ -1413,26 +1826,37 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint32_t seq_id
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     cap          = q.capacity_mask + 1
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
 
     while q.running.load(memory_order_acquire):
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING
+                atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                    return Q_CLOSING
+                continue
+            else:
+                return Q_NO_CONSUMER
+
         head = q.head.load(memory_order_acquire)
         tail = q.tail.load(memory_order_relaxed)
 
         if (tail + total_chunks) - head > cap:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 atomic_wait(&q.head, head, &q.head_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -1467,7 +1891,7 @@ cdef int mpsc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
@@ -1480,10 +1904,13 @@ cdef int mpsc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint32_t seq_id
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     cap          = q.capacity_mask + 1
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
@@ -1541,10 +1968,10 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = head & q.capacity_mask
@@ -1553,7 +1980,7 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 q.head.store(head + 1, memory_order_release)
@@ -1573,7 +2000,7 @@ cdef int mpsc_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
         atomic_notify_all(&q.head, &q.head_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int mpsc_py_pop(void* ctx, PyObject** out) except -1:
     cdef:
@@ -1589,11 +2016,11 @@ cdef int mpsc_py_pop(void* ctx, PyObject** out) except -1:
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             with nogil:
                 atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = head & q.capacity_mask
@@ -1603,7 +2030,7 @@ cdef int mpsc_py_pop(void* ctx, PyObject** out) except -1:
         with nogil:
             while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 spins += 1
                 if spins & 0x3FF == 0 and _claimed_slot_orphaned_py(q, &slot_start, &timer_started):
                     q.head.store(head + 1, memory_order_release)
@@ -1621,7 +2048,7 @@ cdef int mpsc_py_pop(void* ctx, PyObject** out) except -1:
         atomic_notify_all(&q.head, &q.head_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int mpsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
@@ -1632,7 +2059,7 @@ cdef int mpsc_try_pop(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_relaxed)
     tail = q.tail.load(memory_order_acquire)
@@ -1664,7 +2091,7 @@ cdef int mpsc_py_try_pop(void* ctx, PyObject** out) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     head = q.head.load(memory_order_relaxed)
     tail = q.tail.load(memory_order_acquire)
@@ -1702,10 +2129,10 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
         if head == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = head & q.capacity_mask
@@ -1714,7 +2141,7 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 q.head.store(head + 1, memory_order_release)
@@ -1730,7 +2157,7 @@ cdef int mpsc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         _tls_set_borrow(head, idx)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef void mpsc_pop_commit(void* ctx) noexcept nogil:
@@ -1767,7 +2194,7 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if head == tail:
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = head & q.capacity_mask
@@ -1776,7 +2203,7 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
 
         while q.publish[idx].seq.load(memory_order_acquire) != head + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 st.expected_chunk = 0
@@ -1806,7 +2233,7 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -1828,7 +2255,7 @@ cdef int mpsc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
             st.expected_chunk = 0
             return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
@@ -1842,11 +2269,12 @@ cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         uint16_t total_chunks
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
-    while True:
-        if not q.running.load(memory_order_acquire):
-            return Q_ERR
+    #while True:
+    #    if not q.running.load(memory_order_acquire):
+    #        return Q_CLOSING
+    while q.running.load(memory_order_acquire):
 
         head = q.head.load(memory_order_relaxed)
         tail = q.tail.load(memory_order_acquire)
@@ -1874,14 +2302,14 @@ cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
                 atomic_notify_all(&q.head, &q.head_wm)
                 st.discard_count += 1
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
 
         needed = st.assemble_used + slot.size
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -1902,6 +2330,7 @@ cdef int mpsc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
             st.expected_seq  += 1
             st.expected_chunk = 0
             return Q_OK
+    return Q_CLOSING
 
 
 # =========================================================================
@@ -1927,10 +2356,10 @@ cdef inline int _mc_pop_impl(
 
         if pos == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = pos & q.capacity_mask
@@ -1939,7 +2368,7 @@ cdef inline int _mc_pop_impl(
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 q.reader_pos[rid].value.store(pos + 1, memory_order_release)
@@ -1962,7 +2391,7 @@ cdef inline int _mc_pop_impl(
 
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef inline int _mc_pop_impl_py(
     PyQueueImpl* q,
@@ -1981,11 +2410,11 @@ cdef inline int _mc_pop_impl_py(
 
         if pos == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             with nogil:
                 atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = pos & q.capacity_mask
@@ -1995,7 +2424,7 @@ cdef inline int _mc_pop_impl_py(
         with nogil:
             while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 spins += 1
                 if spins & 0x3FF == 0 and _claimed_slot_orphaned_py(q, &slot_start, &timer_started):
                     q.reader_pos[rid].value.store(pos + 1, memory_order_release)
@@ -2016,7 +2445,7 @@ cdef inline int _mc_pop_impl_py(
 
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef inline int _mc_try_pop_impl(
     QueueImpl* q,
@@ -2030,7 +2459,7 @@ cdef inline int _mc_try_pop_impl(
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     pos  = q.reader_pos[rid].value.load(memory_order_acquire)
     tail = q.tail.load(memory_order_acquire)
@@ -2068,7 +2497,7 @@ cdef inline int _mc_try_pop_impl_py(
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
     pos  = q.reader_pos[rid].value.load(memory_order_acquire)
     tail = q.tail.load(memory_order_acquire)
@@ -2106,23 +2535,34 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING
+                atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                    return Q_CLOSING
+                continue
+            else:
+                return Q_NO_CONSUMER
+
         tail    = q.tail.load(memory_order_relaxed)
         min_pos = q.reader_min_pos.load(memory_order_acquire)
 
         if tail - min_pos >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -2146,7 +2586,7 @@ cdef int spmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int spmc_py_push(void* ctx, object data) except -1:
     cdef:
@@ -2155,24 +2595,36 @@ cdef int spmc_py_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
+        if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                if not q.running.load(memory_order_acquire):
+                    return Q_CLOSING
+                with nogil:
+                    atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                    return Q_CLOSING
+                continue
+            else:
+                return Q_NO_CONSUMER
+
         tail    = q.tail.load(memory_order_relaxed)
         min_pos = q.reader_min_pos.load(memory_order_acquire)
 
         if tail - min_pos >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 with nogil:
                     atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -2192,7 +2644,7 @@ cdef int spmc_py_push(void* ctx, object data) except -1:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int spmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
     cdef:
@@ -2201,10 +2653,13 @@ cdef int spmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     tail    = q.tail.load(memory_order_relaxed)
     min_pos = q.reader_min_pos.load(memory_order_acquire)
@@ -2238,10 +2693,13 @@ cdef int spmc_py_try_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+    
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     tail    = q.tail.load(memory_order_relaxed)
     min_pos = q.reader_min_pos.load(memory_order_acquire)
@@ -2275,10 +2733,10 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint32_t   seq_id
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
     
@@ -2287,17 +2745,28 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
     for chunk_idx in range(total_chunks):
         while q.running.load(memory_order_acquire):
+            if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+                if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
+                    if not q.running.load(memory_order_acquire):
+                        return Q_CLOSING
+                    atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
+                    if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
+                        return Q_CLOSING
+                    continue
+                else:
+                    return Q_NO_CONSUMER
+
             tail    = q.tail.load(memory_order_relaxed)
             min_pos = q.reader_min_pos.load(memory_order_acquire)
 
             if tail - min_pos >= q.capacity_mask + 1:
                 if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                     if not q.running.load(memory_order_acquire):
-                        return Q_ERR
+                        return Q_CLOSING
                         
                     atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                        return Q_ERR
+                        return Q_CLOSING
                     continue
                 else:
                     return Q_FULL
@@ -2324,7 +2793,7 @@ cdef int spmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
             break
 
         if not q.running.load(memory_order_acquire):
-            return Q_ERR
+            return Q_CLOSING
 
     return Q_OK
 
@@ -2339,10 +2808,13 @@ cdef int spmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint32_t   seq_id
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
+    
+    if q.reader_active_mask.value.load(memory_order_acquire) == 0:
+        return Q_NO_CONSUMER
 
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
     seq_id = q.seq_counter.fetch_add(1, memory_order_relaxed)
@@ -2411,10 +2883,10 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
         if pos == tail:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = pos & q.capacity_mask
@@ -2423,7 +2895,7 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 q.reader_pos[rid].value.store(pos + 1, memory_order_release)
@@ -2440,7 +2912,7 @@ cdef int spmc_pop_borrow(void* ctx, char** out_buf, size_t* out_size) noexcept n
         _tls_set_borrow(pos, idx)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef void spmc_pop_commit(void* ctx) noexcept nogil:
     cdef:
@@ -2473,7 +2945,7 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if pos == tail:
             atomic_wait(&q.tail, tail, &q.tail_wm)
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             continue
 
         idx = pos & q.capacity_mask
@@ -2482,7 +2954,7 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
 
         while q.publish[idx].seq.load(memory_order_acquire) != pos + 1:
             if not q.running.load(memory_order_acquire):
-                return Q_ERR
+                return Q_CLOSING
             spins += 1
             if spins & 0x3FF == 0 and _claimed_slot_orphaned(q, &slot_start, &timer_started):
                 st.expected_chunk = 0
@@ -2515,7 +2987,7 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -2538,7 +3010,7 @@ cdef int spmc_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogi
             st.expected_chunk = 0
             return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept nogil:
@@ -2553,12 +3025,12 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
         uint16_t   total_chunks
 
     if not q.running.load(memory_order_acquire):
-        return Q_ERR
+        return Q_CLOSING
 
-    while True:
-        if not q.running.load(memory_order_acquire):
-            return Q_ERR
-
+    #while True:
+    #    if not q.running.load(memory_order_acquire):
+    #        return Q_CLOSING
+    while q.running.load(memory_order_acquire):
         pos  = q.reader_pos[rid].value.load(memory_order_acquire)
         tail = q.tail.load(memory_order_acquire)
 
@@ -2587,14 +3059,14 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
 
                 st.discard_count += 1                
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
 
         needed = st.assemble_used + slot.size
         if needed > st.assemble_cap:
             tmp = <char*>realloc(st.assemble_buf, needed * 2)
             if tmp == NULL:
-                return Q_ERR
+                return Q_CLOSING
             st.assemble_buf = tmp
             st.assemble_cap = needed * 2
 
@@ -2616,6 +3088,7 @@ cdef int spmc_try_pop_var(void* ctx, char** out_buf, size_t* out_size) noexcept 
             st.expected_seq  += 1
             st.expected_chunk = 0
             return Q_OK
+    return Q_CLOSING
 
 
 # =========================================================================
@@ -2631,20 +3104,20 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
         if q.reader_active_mask.value.load(memory_order_acquire) == 0:
-            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_NO_CONSUMER
@@ -2655,11 +3128,11 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         if tail - min_pos >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -2683,7 +3156,7 @@ cdef int mpmc_push(void* ctx, const char* data, size_t size) noexcept nogil:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 cdef int mpmc_py_push(void* ctx, object data) except -1:
     cdef:
@@ -2692,21 +3165,21 @@ cdef int mpmc_py_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     while q.running.load(memory_order_acquire):
         if q.reader_active_mask.value.load(memory_order_acquire) == 0:
-            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
                 with nogil:
                     atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_NO_CONSUMER
@@ -2717,11 +3190,12 @@ cdef int mpmc_py_push(void* ctx, object data) except -1:
         if tail - min_pos >= q.capacity_mask + 1:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                     
-                atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
+                with nogil:
+                    atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -2743,7 +3217,7 @@ cdef int mpmc_py_push(void* ctx, object data) except -1:
         atomic_notify_all(&q.tail, &q.tail_wm)
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int mpmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
@@ -2753,10 +3227,10 @@ cdef int mpmc_try_push(void* ctx, const char* data, size_t size) noexcept nogil:
         QueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
     
     if q.reader_active_mask.value.load(memory_order_acquire) == 0:
         return Q_NO_CONSUMER
@@ -2795,10 +3269,10 @@ cdef int mpmc_py_try_push(void* ctx, object data) except -1:
         PyQueueSlot* slot
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
     
     if q.reader_active_mask.value.load(memory_order_acquire) == 0:
         return Q_NO_CONSUMER
@@ -2838,22 +3312,22 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         uint32_t   seq_id
 
     if q.flags.load(memory_order_acquire) & F_CLOSING:
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
 
     cap          = q.capacity_mask + 1
     total_chunks = <uint16_t>((size + q.slot_size - 1) / q.slot_size)
 
     while q.running.load(memory_order_acquire):
         if q.reader_active_mask.value.load(memory_order_acquire) == 0:
-            if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
+            if q.flags.load(memory_order_acquire) & F_WAIT_CONSUMERS:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 atomic_wait(&q.reader_active_mask.value, <uint64_t>0, &q.reader_active_mask_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_NO_CONSUMER
@@ -2864,10 +3338,10 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
         if (tail + total_chunks) - min_pos > cap:
             if q.flags.load(memory_order_acquire) & F_BLOCK_ON_FULL:
                 if not q.running.load(memory_order_acquire):
-                    return Q_ERR
+                    return Q_CLOSING
                 atomic_wait(&q.reader_min_pos, min_pos, &q.reader_min_pos_wm)
                 if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-                    return Q_ERR
+                    return Q_CLOSING
                 continue
             else:
                 return Q_FULL
@@ -2903,7 +3377,7 @@ cdef int mpmc_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
 
         return Q_OK
 
-    return Q_ERR
+    return Q_CLOSING
 
 
 cdef int mpmc_try_push_var(void* ctx, const char* data, size_t size) noexcept nogil:
@@ -2916,10 +3390,10 @@ cdef int mpmc_try_push_var(void* ctx, const char* data, size_t size) noexcept no
         uint32_t   seq_id
 
     if not q.running.load(memory_order_acquire) or (q.flags.load(memory_order_acquire) & F_CLOSING):
-        return Q_ERR
+        return Q_CLOSING
     
     if _tls_get_pid() == 0xFFFFFFFFu:
-        return Q_ERR
+        return Q_CLOSING
     
     if q.reader_active_mask.value.load(memory_order_acquire) == 0:
         return Q_NO_CONSUMER
@@ -3153,6 +3627,8 @@ cdef class Queue:
             bint      overwrite     = False,
             bint      zerocopy      = False,
             bint      block_on_full = False,
+            bint      wait_consumers = False,
+            bint      lag_evict      = False
         ):
 
         self._signal_registered = False 
@@ -3160,7 +3636,9 @@ cdef class Queue:
         cdef uint8_t init_flags = (
             (F_OVERWRITE     if overwrite     else 0) |
             (F_ZEROCOPY      if zerocopy      else 0) |
-            (F_BLOCK_ON_FULL if block_on_full else 0)
+            (F_BLOCK_ON_FULL  if block_on_full  else 0) |
+            (F_WAIT_CONSUMERS if wait_consumers else 0) |
+            (F_LAG_EVICT      if lag_evict     else 0)
         )
         cdef int rc = queue_init(<void*>&self._q, slot_size, capacity,
                                   mode != SPSC, init_flags)
@@ -3220,6 +3698,9 @@ cdef class Queue:
         if mode == SPMC  or mode == MPMC:
             self._q.fn_register_consumer   = register_consumer
             self._q.fn_unregister_consumer = unregister_consumer
+        elif mode == QueueMode.MPSC:
+            self._q.fn_register_consumer   = mpsc_register_consumer
+            self._q.fn_unregister_consumer = mpsc_unregister_consumer
         
         if mode == SPMC or mode == MPSC or mode == MPMC:
             self._q.fn_register_producer   = register_producer
@@ -3288,6 +3769,83 @@ cdef class Queue:
         queue_destroy(<void*>&self._q)
 
 
+
+cdef class BridgeQueue:  ## Dispatch helper
+    
+    def __init__(
+            self,
+            size_t    capacity = 16384,
+            size_t    slot_size = 2048,
+            bint      zerocopy  = False,
+            bint      overwrite     = False,
+            bint      block_on_full = False,
+        ):
+        self._signal_registered = False 
+        
+        cdef uint8_t init_flags = (
+            (F_OVERWRITE     if overwrite     else 0) |
+            (F_ZEROCOPY      if zerocopy      else 0) |
+            (F_BLOCK_ON_FULL  if block_on_full  else 0) 
+        )
+        cdef int rc = queue_init(<void*>&self._q, slot_size, capacity,
+                                  False, init_flags)
+        if rc == Q_ERR:
+            raise ValueError("invalid capacity/slot_size, or allocation failed")
+        self._q.fn_push         = NULL
+        self._q.fn_try_push     = NULL
+        self._q.fn_push_var     = NULL
+        self._q.fn_try_push_var = NULL
+        self._q.fn_pop          = NULL
+        self._q.fn_try_pop      = NULL
+        self._q.fn_pop_var      = NULL
+        self._q.fn_try_pop_var  = NULL
+        self._q.fn_pop_borrow   = NULL
+        self._q.fn_pop_commit   = NULL
+
+        init_signal_handler()
+        register_context_notify(
+            <void*>&self._q,
+            NULL,
+            <context_notify_fn>queue_notify,
+        )
+        self._signal_registered = True
+
+    cdef int push(self, const char* data, size_t size) noexcept nogil:
+        return spsc_push(<void*>&self._q, data, size)
+
+    cdef int try_push(self, const char* data, size_t size) noexcept nogil:
+        return spsc_try_push(<void*>&self._q, data, size)
+
+    cdef int push_var(self, const char* data, size_t size) noexcept nogil:
+        return spsc_push_var(<void*>&self._q, data, size)
+
+    cdef int try_push_var(self, const char* data, size_t size) noexcept nogil:
+        return spsc_try_push_var(<void*>&self._q, data, size)
+
+    cdef int pop(self, char** out_buf, size_t* out_size):
+        return spsc_pop_py_dispatch(<void*>&self._q, out_buf, out_size)
+
+    cdef int try_pop(self, char** out_buf, size_t* out_size):
+        return spsc_try_pop_py_dispatch(<void*>&self._q, out_buf, out_size)
+
+    cdef int pop_var(self, char** out_buf, size_t* out_size):
+        return spsc_pop_var_py_dispatch(<void*>&self._q, out_buf, out_size)
+
+    cdef int try_pop_var(self, char** out_buf, size_t* out_size):
+        return spsc_try_pop_var_py_dispatch(<void*>&self._q, out_buf, out_size)
+
+    cdef int close(self, long timeout_ms = 0) noexcept nogil:
+        return queue_close(<void*>&self._q, timeout_ms)
+
+    def __dealloc__(self):
+        self.close()
+
+        if self._signal_registered:
+            unregister_context_notify(<void*>&self._q)
+            cleanup_signal_handler()
+
+        queue_destroy(<void*>&self._q)
+
 # =========================================================================
 # ========================   PYTHON WRAPPER   =============================
 # =========================================================================
@@ -3297,6 +3855,34 @@ cpdef enum class BroadcastMode:
     SPMC = <int>QueueMode.SPMC
     MPSC = <int>QueueMode.MPSC
     MPMC = <int>QueueMode.MPMC
+
+
+class QueueError(Exception):
+    pass
+
+class QueueClosed(QueueError):
+    pass
+
+class QueueOrphaned(QueueError):
+    pass
+
+class QueueUnknownStatus(QueueError):
+    pass
+
+
+
+cdef inline int _check_ret(int ret) except -1000:
+    if ret == Q_OK or ret == Q_EMPTY or ret == Q_FULL or ret == Q_NO_CONSUMER:
+        return ret
+    elif ret == Q_CLOSING:
+        raise QueueClosed(b"Queue is closing")
+    elif ret == Q_ERR:
+        raise QueueError(b"queue is in an invalid state")
+    elif ret == Q_ORPHANED:
+        raise QueueOrphaned(b"claimed slot was abandoned")
+    else:
+        raise QueueUnknownStatus(b"unrecognized queue status code: %d" % ret)
+
 
 
 cdef class BroadcastQueue:
@@ -3310,13 +3896,17 @@ cdef class BroadcastQueue:
             BroadcastMode mode  = BroadcastMode.SPSC,
             bint      overwrite     = False,
             bint      block_on_full = False,
+            bint      wait_consumers = False,
+            bint      lag_evict      = False
         ):
 
         self._signal_registered = False 
         
         cdef uint8_t init_flags = <uint8_t>(
             (F_OVERWRITE     if overwrite     else 0) |
-            (F_BLOCK_ON_FULL if block_on_full else 0)
+            (F_BLOCK_ON_FULL  if block_on_full  else 0) |
+            (F_WAIT_CONSUMERS if wait_consumers else 0) |
+            (F_LAG_EVICT      if lag_evict     else 0)
         )
         
         self._q.mode = <QueueMode>mode
@@ -3351,6 +3941,9 @@ cdef class BroadcastQueue:
         if mode == BroadcastMode.SPMC  or mode == BroadcastMode.MPMC:
             self._q.fn_register_consumer   = py_register_consumer
             self._q.fn_unregister_consumer = py_unregister_consumer
+        elif mode == BroadcastMode.MPSC:
+            self._q.fn_register_consumer   = py_mpsc_register_consumer
+            self._q.fn_unregister_consumer = py_mpsc_unregister_consumer
 
         if mode != BroadcastMode.SPSC:
             self._q.fn_register_producer   = py_register_producer
@@ -3365,10 +3958,10 @@ cdef class BroadcastQueue:
         self._signal_registered = True
 
     cpdef int push(self, object msg):
-        return self._q.fn_py_push(<void*>&self._q, msg)
+        return _check_ret(self._q.fn_py_push(<void*>&self._q, msg))
 
     cpdef int try_push(self, object msg):
-        return self._q.fn_py_try_push(<void*>&self._q, msg)
+        return _check_ret(self._q.fn_py_try_push(<void*>&self._q, msg))
 
     cpdef object pop(self):
         cdef PyObject* out_ptr = NULL
@@ -3378,6 +3971,7 @@ cdef class BroadcastQueue:
             out = <object>out_ptr
             Py_XDECREF(out_ptr)
             return out
+        _check_ret(ret)
         return None
 
     cpdef object try_pop(self):
@@ -3388,6 +3982,7 @@ cdef class BroadcastQueue:
             out = <object>out_ptr
             Py_XDECREF(out_ptr) 
             return out
+        _check_ret(ret)
         return None
 
     cpdef int register_consumer(self):
@@ -3395,9 +3990,13 @@ cdef class BroadcastQueue:
            raise RuntimeError(
                "register_consumer() is only valid for SPMC/MPMC BroadcastQueue mode"
            )
-        cdef uint32_t out_id
+        cdef:
+            uint32_t out_id
+            int ret
+
         with nogil:
-            return self._q.fn_register_consumer(<void*>&self._q, &out_id)
+            ret= self._q.fn_register_consumer(<void*>&self._q, &out_id)
+        return _check_ret(ret)
 
     cpdef void unregister_consumer(self):
         if self._q.fn_unregister_consumer == NULL:
@@ -3415,9 +4014,12 @@ cdef class BroadcastQueue:
             raise RuntimeError(
                 "register_producer() is not valid for SPSC BroadcastQueue mode"
             )
-        cdef uint32_t out_id
+        cdef:
+            uint32_t out_id
+            int ret
         with nogil:
-            return self._q.fn_register_producer(<void*>&self._q, &out_id)
+            ret= self._q.fn_register_producer(<void*>&self._q, &out_id)
+        _check_ret(ret)
 
     cpdef void unregister_producer(self):
         if self._q.fn_unregister_producer == NULL:

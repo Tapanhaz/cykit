@@ -41,17 +41,18 @@ cdef enum:
     F_ZEROCOPY      = 1 << 1
     F_BLOCK_ON_FULL = 1 << 2
     F_CLOSING       = 1 << 3
+    F_WAIT_CONSUMERS = 1 << 4
+    F_LAG_EVICT      = 1 << 5
 
 
 cdef enum:
     Q_OK      =  1
     Q_EMPTY   =  0
-    Q_FULL    = -2
     Q_ERR     = -1
-    Q_PARTIAL =  2
-    Q_SKIP    =  3
+    Q_FULL    = -2
     Q_NO_CONSUMER = -3
     Q_ORPHANED    = -4
+    Q_CLOSING     = -5
 
 cdef enum QueueMode:
     SPSC = 0
@@ -61,6 +62,7 @@ cdef enum QueueMode:
 
 cdef enum:
     POP_ORPHAN_STALL_MS = 3000
+    LAG_EVICT_DIVISOR    = 3
 
 cdef struct QueueSlot:
     char*    buf
@@ -79,6 +81,7 @@ cdef struct ConsumerCtx:
     uint64_t resync_count
     char*    scratch_buf
     size_t   scratch_cap
+    atomic[uint64_t] lag_flag_pos
 
 
 cdef struct QueueImpl:
@@ -153,7 +156,7 @@ cdef struct PyQueueImpl:
     WaiterMetaPaddedBare[uint64_t] reader_min_pos_wm
 
     PaddedAtomicU64 reader_pos[64] 
-
+    PaddedAtomicU64 lag_flag_pos[64]
     PaddedAtomicU64 producer_active_mask
 
     py_push_fn fn_py_push
@@ -273,6 +276,7 @@ cdef int mpmc_py_try_pop(void*, PyObject**) except -1
 
 
 
+
 cdef class Queue:
     cdef:
         QueueImpl _q
@@ -299,3 +303,21 @@ cdef class Queue:
 
     cdef int close(self, long timeout_ms=?) noexcept nogil
 
+
+
+cdef class BridgeQueue:
+    cdef:
+        QueueImpl _q
+        bint _signal_registered
+
+    cdef int push(self, const char* data, size_t size) noexcept nogil
+    cdef int try_push(self, const char* data, size_t size) noexcept nogil
+    cdef int push_var(self, const char* data, size_t size) noexcept nogil
+    cdef int try_push_var(self, const char* data, size_t size) noexcept nogil
+
+    cdef int pop(self, char** out_buf, size_t* out_size)
+    cdef int try_pop(self, char** out_buf, size_t* out_size)
+    cdef int pop_var(self, char** out_buf, size_t* out_size)
+    cdef int try_pop_var(self, char** out_buf, size_t* out_size)
+
+    cdef int close(self, long timeout_ms = ?) noexcept nogil
