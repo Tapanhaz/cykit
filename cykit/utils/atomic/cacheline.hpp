@@ -20,8 +20,17 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Winterference-size"
+//#  pragma GCC diagnostic ignored "-Winterference-size"
+#  if defined(__clang__)
+#    if __has_warning("-Winterference-size")
+#      pragma GCC diagnostic ignored "-Winterference-size"
+#    endif
+#  elif defined(__GNUC__) && (__GNUC__ >= 9)
+#    pragma GCC diagnostic ignored "-Winterference-size"
+#  endif
+
 #endif
+
 
 namespace cykit {
 
