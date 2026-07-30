@@ -2,10 +2,10 @@ import requests
 from cy_module import cy_func  # type: ignore
 from py_module import py_module_func
 
-from cykit.cylogger import ColorScheme, ConsoleHandler, FileHandler, Logger
+from cykit.cylogger import ColorScheme, ConsoleHandler, FileHandler, Logger, LogLevel
 from cykit.cylogger.color import AnsiColor, TextEffect
 
-logger = Logger("xyz")
+logger = Logger("xyz", level= LogLevel.TRACE)
 
 
 class TestClass:
@@ -49,6 +49,7 @@ logger_2 = Logger(
     color_scheme=color_scheme,
     # If no defaults set, all logging depends on default logger will be silent.  # noqa E501
     set_default=True,
+    level= LogLevel.TRACE
 )
 
 
