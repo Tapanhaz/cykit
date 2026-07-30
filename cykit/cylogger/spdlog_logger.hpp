@@ -19,13 +19,19 @@
 
 #include <map>
 #include <mutex>
+#include <atomic>
+#include <mutex>
+#include <cctype>
 #include <memory>
 #include <vector>
 #include <string>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <Python.h>
+#include <algorithm>
+#include <unordered_map>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/sink.h>
 #include <spdlog/sinks/base_sink.h>
@@ -87,7 +93,6 @@ namespace sink_adapter {
             formatter_->format(msg, fmt_buf_);
             //fmt_buf_.push_back('\0');
     
-            //int ret = push_fn_(fmt_buf_.data(), fmt_buf_.size() - 1, userdata_);
             int ret = push_fn_(fmt_buf_.data(), fmt_buf_.size(), userdata_);
     
             if (ret == -2) {
@@ -149,6 +154,18 @@ namespace spdlog_internal {
     }; 
 
     // ****************************************************************************
+
+    inline std::string format_active_exception() {
+        auto ep = std::current_exception();
+        if (!ep) return "no active exception";
+        try {
+            std::rethrow_exception(ep);
+        } catch (const std::exception& e) {
+            return e.what();
+        } catch (...) {
+            return "unknown non-standard exception";
+        }
+    }
 
     inline std::shared_ptr<spdlog::logger> get_null_logger() {
         static auto _null_sink = std::make_shared<spdlog::sinks::null_sink_mt>();
@@ -240,6 +257,22 @@ namespace spdlog_internal {
         }
 
         return fmt::format("\033[{}m{}\033[0m", color_codes, msg);
+    }
+
+    inline spdlog::level::level_enum env_level_override(spdlog::level::level_enum fallback) {
+        const char* env = std::getenv("CYKIT_LOG_LEVEL");
+        if (!env) return fallback;
+        std::string s(env);
+        std::transform(s.begin(), s.end(), s.begin(),
+            [](unsigned char c) { return std::tolower(c); });
+        if (s == "trace") return spdlog::level::trace;
+        if (s == "debug") return spdlog::level::debug;
+        if (s == "info") return spdlog::level::info;
+        if (s == "warn" || s == "warning") return spdlog::level::warn;
+        if (s == "error" || s == "err") return spdlog::level::err;
+        if (s == "critical") return spdlog::level::critical;
+        if (s == "off") return spdlog::level::off;
+        return fallback; 
     }
 
     inline std::string printf_format(const char* fmt_str, ...) {
@@ -428,7 +461,19 @@ namespace spdlog_internal {
 class LoggerRegistry {
     public:
         static void set_default(std::shared_ptr<spdlog::logger> logger) {
-            get_instance().default_logger_ = logger;
+            {
+                std::lock_guard<std::mutex> lock(default_mutex());
+                get_instance().default_logger_ = logger;
+            }
+            if (logger) {
+                propagate_level_to_inherited(logger->level());
+            }
+            bump_generation();
+        }
+
+        static std::shared_ptr<spdlog::logger> get_default() {
+            std::lock_guard<std::mutex> lock(default_mutex());
+            return get_instance().default_logger_;
         }
 
         static std::shared_ptr<spdlog::logger> get_logger(const std::string& logger_name= "", bool fallback_to_default = true) {    
@@ -436,11 +481,14 @@ class LoggerRegistry {
             if (!logger_name.empty()) {
                 logger_ = spdlog::get(logger_name);
         
-                if(!logger_ && !fallback_to_default) {
-                    return spdlog_internal::get_null_logger();
+                if (!logger_) {
+                    if (!fallback_to_default) {
+                        return spdlog_internal::get_null_logger();
+                    }
+                    logger_ = get_default();
                 }
             } else {
-                logger_ = get_instance().default_logger_;
+                logger_ = get_default();
             }
         
             if (!logger_) {
@@ -450,12 +498,115 @@ class LoggerRegistry {
             return logger_;
         }
 
+        static std::shared_ptr<spdlog::logger> get_logger_hierarchical(
+                const std::string& logger_name, bool fallback_to_default) {
+            if (logger_name.empty()) {
+                return get_logger(logger_name, fallback_to_default);
+            }
+
+            std::string key = logger_name;
+            while (true) {
+                auto found = spdlog::get(key);
+                if (found) {
+                    return found;
+                }
+                auto pos = key.find_last_of('.');
+                if (pos == std::string::npos) {
+                    break;
+                }
+                key = key.substr(0, pos);
+            }
+
+            if (!fallback_to_default) {
+                return spdlog_internal::get_null_logger();
+            }
+
+            auto def = get_default();
+            if (!def) {
+                return spdlog_internal::get_null_logger();
+            }
+
+            return find_or_create_inherited(logger_name, def);
+        }
+
+        static uint64_t generation() {
+            return generation_counter().load(std::memory_order_relaxed);
+        }
+
+        static void bump_generation() {
+            generation_counter().fetch_add(1, std::memory_order_relaxed);
+        }
+
     private:
         static LoggerRegistry& get_instance() {
             static LoggerRegistry instance;
             return instance;
         }
 
+        static std::atomic<uint64_t>& generation_counter() {
+            static std::atomic<uint64_t> counter{0};
+            return counter;
+        }
+
+        static std::mutex& default_mutex() {
+            static std::mutex m;
+            return m;
+        }
+
+        static std::mutex& inherited_mutex() {
+            static std::mutex m;
+            return m;
+        }
+
+        static std::unordered_map<std::string, std::weak_ptr<spdlog::logger>>& inherited_map() {
+            static std::unordered_map<std::string, std::weak_ptr<spdlog::logger>> m;
+            return m;
+        }
+
+        static std::shared_ptr<spdlog::logger> find_or_create_inherited(
+                const std::string& name, const std::shared_ptr<spdlog::logger>& def) {
+            std::lock_guard<std::mutex> lock(inherited_mutex());
+
+            if (auto real = spdlog::get(name)) {
+                return real;
+            }
+
+            auto it = inherited_map().find(name);
+            if (it != inherited_map().end()) {
+                if (auto existing = it->second.lock()) {
+                    return existing;
+                }
+            }
+
+            auto child = std::make_shared<spdlog::logger>(
+                name, def->sinks().begin(), def->sinks().end());
+            child->set_level(def->level());
+
+            try {
+                spdlog::register_logger(child);
+            } catch (const spdlog::spdlog_ex&) {
+                if (auto real = spdlog::get(name)) {
+                    return real;
+                }
+                return def; 
+            }
+
+            inherited_map()[name] = child;
+            return child;
+        }
+
+        static void propagate_level_to_inherited(spdlog::level::level_enum lvl) {
+            std::lock_guard<std::mutex> lock(inherited_mutex());
+            auto& m = inherited_map();
+            for (auto it = m.begin(); it != m.end(); ) {
+                if (auto child = it->second.lock()) {
+                    child->set_level(lvl);
+                    ++it;
+                } else {
+                    it = m.erase(it);
+                }
+            }
+        }
 
         std::shared_ptr<spdlog::logger> default_logger_;
 };
@@ -663,14 +814,23 @@ class LoggerFactory {
         }
 
         std::shared_ptr<spdlog::logger> build(const std::string& name, bool default_logger= false) {
+            if (spdlog::get(name)) {
+                throw spdlog::spdlog_ex("logger '" + name + "' already registered");
+            }
+
             auto logger = std::make_shared<spdlog::logger>(name, sinks_[0]);
         
             for (size_t i= 1; i < sinks_.size(); i++) {
                 logger->sinks().push_back(sinks_[i]);
             }
 
-            logger->set_level(static_cast<spdlog::level::level_enum>(g_level_));
+            //logger->set_level(static_cast<spdlog::level::level_enum>(g_level_));
+            logger->set_level(spdlog_internal::env_level_override(
+                static_cast<spdlog::level::level_enum>(g_level_))
+            );
+
             spdlog::register_logger(logger);
+            LoggerRegistry::bump_generation();
         
             if (default_logger) {
                 //spdlog::set_default_logger(logger);
@@ -950,6 +1110,14 @@ inline std::shared_ptr<spdlog::logger> registry_get_logger_ptr(const std::string
     return LoggerRegistry::get_logger(logger_name, fallback_to_default);
 }
 
+inline std::shared_ptr<spdlog::logger> registry_get_logger_hierarchical(const std::string& logger_name, bool fallback_to_default) {
+    return LoggerRegistry::get_logger_hierarchical(logger_name, fallback_to_default);
+}
+
+inline uint64_t registry_generation() {
+    return LoggerRegistry::generation();
+}
+
 // ==============================================================================================================
 
 #define SPDLOG_LOG_IMPL(logger, level, fmt, ...) \
@@ -965,7 +1133,23 @@ inline std::shared_ptr<spdlog::logger> registry_get_logger_ptr(const std::string
                     } \
                 } \
             } \
-        } while(0)        
+        } while(0)    
+        
+#define SPDLOG_LOG_EXCEPTION_IMPL(logger, fmt, ...) \
+    do { \
+        auto& __logger = (logger).get_logger(); \
+        if (__logger->should_log(spdlog::level::err)) { \
+            std::string __formatted_str = spdlog_internal::printf_format(fmt, ##__VA_ARGS__); \
+            __formatted_str += ": " + spdlog_internal::format_active_exception(); \
+            spdlog::source_loc __loc{__FILE__, __LINE__, SPDLOG_FUNCTION}; \
+            for (auto& __sink : __logger->sinks()) { \
+                if (__sink->should_log(spdlog::level::err)) { \
+                    spdlog::details::log_msg __msg(__loc, __logger->name(), spdlog::level::err, __formatted_str); \
+                    __sink->log(__msg); \
+                } \
+            } \
+        } \
+    } while(0)
 
 #define SPDLOG_LOG_D_IMPL(level, fmt, ...) \
     do { \
@@ -982,6 +1166,22 @@ inline std::shared_ptr<spdlog::logger> registry_get_logger_ptr(const std::string
         } \
     } while(0)
 
+#define SPDLOG_LOG_EXCEPTION_D_IMPL(fmt, ...) \
+    do { \
+        std::shared_ptr<spdlog::logger> __logger = LoggerRegistry::get_logger(); \
+        if (__logger->should_log(spdlog::level::err)) { \
+            std::string __formatted_str = spdlog_internal::printf_format(fmt, ##__VA_ARGS__); \
+            __formatted_str += ": " + spdlog_internal::format_active_exception(); \
+            spdlog::source_loc __loc{__FILE__, __LINE__, SPDLOG_FUNCTION}; \
+            for (auto& __sink : __logger->sinks()) { \
+                if (__sink->should_log(spdlog::level::err)) { \
+                    spdlog::details::log_msg __msg(__loc, __logger->name(), spdlog::level::err, __formatted_str); \
+                    __sink->log(__msg); \
+                } \
+            } \
+        } \
+    } while(0)
+
 #define SPDLOG_LOG_M_IMPL(logger_name, level, fmt, ...) \
     do { \
         std::shared_ptr<spdlog::logger> __logger = LoggerRegistry::get_logger(logger_name, false); \
@@ -991,6 +1191,22 @@ inline std::shared_ptr<spdlog::logger> registry_get_logger_ptr(const std::string
             for (auto& __sink : __logger->sinks()) { \
                 if (__sink->should_log(level)) { \
                     spdlog::details::log_msg __msg(__loc, __logger->name(), level, __formatted_str); \
+                    __sink->log(__msg); \
+                } \
+            } \
+        } \
+    } while(0)
+
+#define SPDLOG_LOG_EXCEPTION_M_IMPL(logger_name, fmt, ...) \
+    do { \
+        std::shared_ptr<spdlog::logger> __logger = LoggerRegistry::get_logger(logger_name, false); \
+        if (__logger->should_log(spdlog::level::err)) { \
+            std::string __formatted_str = spdlog_internal::printf_format(fmt, ##__VA_ARGS__); \
+            __formatted_str += ": " + spdlog_internal::format_active_exception(); \
+            spdlog::source_loc __loc{__FILE__, __LINE__, SPDLOG_FUNCTION}; \
+            for (auto& __sink : __logger->sinks()) { \
+                if (__sink->should_log(spdlog::level::err)) { \
+                    spdlog::details::log_msg __msg(__loc, __logger->name(), spdlog::level::err, __formatted_str); \
                     __sink->log(__msg); \
                 } \
             } \
@@ -1180,6 +1396,9 @@ do { \
 #define CRITICAL(fmt, ...)\
     SPDLOG_LOG_D_IMPL(spdlog::level::critical, fmt, ##__VA_ARGS__)
 
+#define EXCEPTION(fmt, ...)\
+    SPDLOG_LOG_EXCEPTION_D_IMPL(fmt, ##__VA_ARGS__)
+
 
 #define TRACE_L(logger, fmt, ...)\
     SPDLOG_LOG_IMPL(logger, spdlog::level::trace, fmt, ##__VA_ARGS__)
@@ -1199,6 +1418,9 @@ do { \
 #define CRITICAL_L(logger, fmt, ...)\
     SPDLOG_LOG_IMPL(logger, spdlog::level::critical, fmt, ##__VA_ARGS__)
 
+#define EXCEPTION_L(logger, fmt, ...)\
+    SPDLOG_LOG_EXCEPTION_IMPL(logger, fmt, ##__VA_ARGS__)
+
 
 #define TRACE_M(logger_name, fmt, ...)\
     SPDLOG_LOG_M_IMPL(logger_name, spdlog::level::trace, fmt, ##__VA_ARGS__)
@@ -1217,6 +1439,9 @@ do { \
 
 #define CRITICAL_M(logger_name, fmt, ...)\
     SPDLOG_LOG_M_IMPL(logger_name, spdlog::level::critical, fmt, ##__VA_ARGS__)
+
+#define EXCEPTION_M(logger_name, fmt, ...)\
+    SPDLOG_LOG_EXCEPTION_M_IMPL(logger_name, fmt, ##__VA_ARGS__)
 
 // ==============================================================================================================
 

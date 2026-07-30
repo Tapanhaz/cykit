@@ -327,6 +327,13 @@ class Logger:
         bg_color: int = -1,
         effect: int = -1,
     ) -> None: ...
+    def exception(
+        self,
+        msg: object,
+        fg_color: int = -1,
+        bg_color: int = -1,
+        effect: int = -1,
+    ) -> None: ...
 
 class DefaultLogger:
     def trace(
@@ -371,3 +378,71 @@ class DefaultLogger:
         bg_color: int = -1,
         effect: int = -1,
     ) -> None: ...
+    def exception(
+        self,
+        msg: object,
+        fg_color: int = -1,
+        bg_color: int = -1,
+        effect: int = -1,
+    ) -> None: ...
+
+class NamedLogger:
+    def __repr__(self) -> str: ...
+    def trace(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def debug(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def info(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def warn(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def error(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def critical(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+    def exception(
+        self,
+        msg: object,
+        args: object = ...,
+        fg_color: int = ...,
+        bg_color: int = ...,
+        effect: int = ...,
+    ) -> None: ...
+
+def get_logger(name: str = ..., fallback_to_default: bool = ...) -> NamedLogger: ...
