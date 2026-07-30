@@ -510,7 +510,7 @@ cdef class NamedLogger:
     cpdef void critical(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
     cpdef void exception(self, object msg, object args= *, int fg_color= *, int bg_color= *, int effect= *)
 
-cpdef NamedLogger get_logger(str name= *, bint fallback_to_default= *)
+cpdef NamedLogger get_logger(str name= *)
 
 
 cdef SpdLogger get_logger_by_name(const char* name)

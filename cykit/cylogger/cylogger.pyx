@@ -1372,7 +1372,7 @@ cdef dict   _named_logger_cache = {}
 cdef object _named_logger_lock  = threading.Lock()
 
 
-cpdef NamedLogger get_logger(str name="", bint fallback_to_default=True):
+cpdef NamedLogger get_logger(str name=""):
     cdef NamedLogger inst = <NamedLogger>_named_logger_cache.get(name)
     if inst is not None:
         return inst
@@ -1380,7 +1380,7 @@ cpdef NamedLogger get_logger(str name="", bint fallback_to_default=True):
     with _named_logger_lock:
         inst = <NamedLogger>_named_logger_cache.get(name)
         if inst is None:
-            inst = NamedLogger(name, fallback_to_default)
+            inst = NamedLogger(name, True)
             _named_logger_cache[name] = inst
         return inst
 
