@@ -60,7 +60,7 @@ Benchmark configuration:
 
 > Results are measured on the author's development machine and are intended for relative comparison between implementations.
 
-![cykit.ipc Benchmark](https://github.com/Tapanhaz/cykit/tree/main/benchmarks/ipc/results/latest.png)
+![cykit.ipc Benchmark](https://raw.githubusercontent.com/Tapanhaz/cykit/main/benchmarks/ipc/results/latest.png)
 <!-- BENCH:IPC:START -->
 | Implementation | msg/sec | MiB/sec | us/msg |
 |---------------|--------:|--------:|-------:|
@@ -91,7 +91,7 @@ The following benchmark measures throughput using **64-byte fixed-size messages*
 
 > **Note:** Python's standard library queues (`queue.Queue`, `queue.SimpleQueue`, and typical `collections.deque` implementations) provide **work-queue semantics**, where each message is consumed by only one consumer. `cykit.queue` provides **broadcast (fan-out)** semantics, allowing every consumer to receive every published message. To provide the closest comparable scenario, the benchmark below uses the **SPSC** configuration.
 
-![cykit.queue Benchmark](https://github.com/Tapanhaz/cykit/tree/main/benchmarks/queue/results/latest.png)
+![cykit.queue Benchmark](https://raw.githubusercontent.com/Tapanhaz/cykit/main/benchmarks/queue/results/latest.png)
 <!-- BENCH:QUEUE:START -->
 | Implementation | Throughput | Bandwidth | Avg. Latency |
 | :------------- | ---------: | --------: | -----------: |
