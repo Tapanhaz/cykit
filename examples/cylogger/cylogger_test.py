@@ -1,7 +1,9 @@
-from cykit.cylogger import Logger, ColorScheme, FileHandler, ConsoleHandler
-from cykit.cylogger.color import AnsiColor, TextEffect
+import requests
+from cy_module import cy_func  # type: ignore
 from py_module import py_module_func
-from cy_module import cy_func
+
+from cykit.cylogger import ColorScheme, ConsoleHandler, FileHandler, Logger
+from cykit.cylogger.color import AnsiColor, TextEffect
 
 logger = Logger("xyz")
 
@@ -13,16 +15,16 @@ class TestClass:
 logger.trace("This is an TRACE msg from python main module")
 logger.debug("This is an DEBUG msg from python main module")
 logger.info("This is an INFO msg from python main module")
-logger.warn("This is an WARN msg from python main module")
+logger.warn("This is an WARN msg from python main module")  # noqa: G010
 logger.error("This is an ERROR msg from python main module")
 logger.critical(
     "This is an CRITICAL msg from python main module", effect=TextEffect.BLINK
 )  # noqa E501
 
-logger.info("printing object :: %s", TestClass())
+logger.info("logging object :: %s", TestClass())
 
-# Multiple arg should be provided as tuple.
-logger.info("printing object :: %s :: %d", (TestClass(), 123))
+# Multiple args should be provided as tuple.
+logger.info("logging object :: %s :: %d", (TestClass(), 123))
 
 
 # the portion inside %^  %$ will be colored.
@@ -54,10 +56,20 @@ def py_func():
     logger_2.trace("This is an TRACE msg from python main module")
     logger_2.debug("This is an DEBUG msg from python main module")
     logger_2.info("This is an INFO msg from python main module")
-    logger_2.warn("This is an WARN msg from python main module")
+    logger_2.warn("This is an WARN msg from python main module")  # noqa: G010
     logger_2.error("This is an ERROR msg from python main module")
     logger_2.critical("This is an CRITICAL msg from python main module")
 
+
+#Requests internal logs will propagate through the default logger (logger_2)
+
+try:
+    response = requests.get("https://httpbin.org/status/404", timeout=3)
+    response.raise_for_status()
+except Exception as e:
+    logger.exception(e)  # noqa: TRY401
+
+requests.get("https://example.com")
 
 if __name__ == "__main__":
     py_func()
