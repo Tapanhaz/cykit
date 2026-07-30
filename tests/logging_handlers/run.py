@@ -62,6 +62,7 @@ console_handler = ConsoleHandler()
 
 log = Logger(
     "test",
+    level=LogLevel.TRACE,
     handlers=[console_handler, smtp_handler, http_handler, tcp_handler, udp_handler],
     set_default=True,
     diag=True,
